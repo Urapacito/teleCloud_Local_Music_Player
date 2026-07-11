@@ -1,0 +1,900 @@
+const Store = require('electron-store').default;
+const crypto = require('crypto');
+const http = require('http');
+const { URL } = require('url');
+
+const TIDAL_API_URL = 'https://openapi.tidal.com/v2';
+const TIDAL_AUTH_URL = 'https://login.tidal.com/authorize';
+const TIDAL_TOKEN_URL = 'https://auth.tidal.com/v1/oauth2/token';
+const TIDAL_SCOPES = process.env.TIDAL_SCOPES || [
+    'user.read',
+    'collection.read',
+    'playlists.read',
+    'playback',
+    'recommendations.read',
+    'search.read',
+    'entitlements.read',
+].join(' ');
+
+const store = new Store({
+    name: 'tidal-session',
+    encryptionKey: 'telecloud-tidal-encryption-key-2024'
+});
+
+let currentSession = null;
+let oauthState = null;
+let oauthServer = null;
+let oauthTimeout = null;
+
+function closeOAuthServer() {
+    if (oauthTimeout) {
+        clearTimeout(oauthTimeout);
+        oauthTimeout = null;
+    }
+
+    if (oauthServer) {
+        try {
+            oauthServer.close();
+        } catch (err) {
+            console.warn('Failed to close Tidal OAuth server:', err.message);
+        }
+        oauthServer = null;
+    }
+}
+
+function getConfig() {
+    const clientId = process.env.TIDAL_CLIENT_ID;
+    const clientSecret = process.env.TIDAL_CLIENT_SECRET;
+    const redirectUri = process.env.TIDAL_REDIRECT_URI || 'http://127.0.0.1:42813/callback';
+
+    if (!clientId || !clientSecret) {
+        throw new Error('Missing TIDAL_CLIENT_ID or TIDAL_CLIENT_SECRET in .env');
+    }
+
+    return { clientId, clientSecret, redirectUri };
+}
+
+function getBasicAuthHeader(clientId, clientSecret) {
+    return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+}
+
+function generatePkcePair() {
+    const codeVerifier = crypto.randomBytes(32).toString('base64url');
+    const codeChallenge = crypto
+        .createHash('sha256')
+        .update(codeVerifier)
+        .digest('base64url');
+    return { codeVerifier, codeChallenge };
+}
+
+function saveSession(session) {
+    currentSession = session;
+    store.set('session', session);
+}
+
+function buildIncludedMap(included = []) {
+    const map = new Map();
+    for (const resource of included) {
+        map.set(`${resource.type}:${resource.id}`, resource);
+    }
+    return map;
+}
+
+function resolveRelationship(resource, relationshipName, includedMap) {
+    const rel = resource?.relationships?.[relationshipName]?.data;
+    if (!rel) return null;
+    const ref = Array.isArray(rel) ? rel[0] : rel;
+    if (!ref) return null;
+    return includedMap.get(`${ref.type}:${ref.id}`) || ref;
+}
+
+function getArtworkUuid(resource, includedMap) {
+    const artwork = resolveRelationship(resource, 'coverArt', includedMap)
+        || resolveRelationship(resource, 'profileArt', includedMap)
+        || resolveRelationship(resource, 'thumbnailArt', includedMap);
+    return artwork?.id || artwork?.attributes?.mediaArtifactId || null;
+}
+
+function buildImageUrl(uuid, size = 640) {
+    if (!uuid) return null;
+    // Convert UUID to Tidal image path format
+    const path = uuid.replace(/-/g, '/');
+    return `https://resources.tidal.com/images/${path}/${size}x${size}.jpg`;
+}
+
+function parseIsoDuration(isoDuration) {
+    if (!isoDuration || typeof isoDuration !== 'string') return null;
+    // Parse ISO 8601 duration format like "PT2M30S" or "PT3M"
+    const match = isoDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+    if (!match) return null;
+    const hours = parseInt(match[1] || '0', 10);
+    const minutes = parseInt(match[2] || '0', 10);
+    const seconds = parseFloat(match[3] || '0');
+    return hours * 3600 + minutes * 60 + seconds;
+}
+
+function normalizeTrack(resource, includedMap = new Map()) {
+    if (!resource) return null;
+
+    const attrs = resource.attributes || resource;
+    const artistResource = resolveRelationship(resource, 'artists', includedMap);
+    const albumResource = resolveRelationship(resource, 'albums', includedMap);
+    const coverUuid = getArtworkUuid(albumResource, includedMap);
+
+    // Parse duration - could be seconds or ISO 8601 format
+    let duration = attrs.durationInSeconds || attrs.duration;
+    if (typeof duration === 'string' && duration.startsWith('PT')) {
+        duration = parseIsoDuration(duration);
+    }
+
+    return {
+        id: resource.id || attrs.id,
+        title: attrs.title || attrs.name,
+        duration,
+        trackNumber: attrs.trackNumber,
+        artist: {
+            id: artistResource?.id,
+            name: artistResource?.attributes?.name || attrs.artist?.name || 'Unknown Artist'
+        },
+        album: {
+            id: albumResource?.id,
+            title: albumResource?.attributes?.title || attrs.album?.title || '',
+            cover: buildImageUrl(coverUuid) || attrs.album?.cover || null
+        }
+    };
+}
+
+function normalizeAlbum(resource, includedMap = new Map()) {
+    if (!resource) return null;
+
+    const attrs = resource.attributes || resource;
+    const artistResource = resolveRelationship(resource, 'artists', includedMap);
+    const coverUuid = getArtworkUuid(resource, includedMap);
+
+    return {
+        id: resource.id || attrs.id,
+        title: attrs.title || attrs.name,
+        cover: buildImageUrl(coverUuid) || attrs.cover || null,
+        numberOfTracks: attrs.numberOfTracks,
+        artist: artistResource ? {
+            id: artistResource.id,
+            name: artistResource.attributes?.name
+        } : attrs.artist
+    };
+}
+
+function normalizeArtist(resource, includedMap = new Map()) {
+    if (!resource) return null;
+
+    const attrs = resource.attributes || resource;
+    const coverUuid = getArtworkUuid(resource, includedMap);
+
+    return {
+        id: resource.id || attrs.id,
+        name: attrs.name,
+        picture: buildImageUrl(coverUuid, 750) || attrs.picture || null
+    };
+}
+
+function normalizePlaylist(resource, includedMap = new Map()) {
+    if (!resource) return null;
+
+    const attrs = resource.attributes || resource;
+    const coverUuid = getArtworkUuid(resource, includedMap);
+
+    return {
+        uuid: resource.id || attrs.uuid,
+        title: attrs.title || attrs.name,
+        description: attrs.description || '',
+        numberOfTracks: attrs.numberOfItems || attrs.numberOfTracks || 0,
+        image: buildImageUrl(coverUuid),
+        squareImage: buildImageUrl(coverUuid)
+    };
+}
+
+function wrapItems(items) {
+    return items.filter(Boolean).map(item => ({ item }));
+}
+
+async function exchangeToken(body, clientId, clientSecret) {
+    const response = await fetch(TIDAL_TOKEN_URL, {
+        method: 'POST',
+        headers: {
+            'Authorization': getBasicAuthHeader(clientId, clientSecret),
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams(body).toString()
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const message = data.error_description || data.error || `Token request failed (${response.status})`;
+        throw new Error(message);
+    }
+    return data;
+}
+
+async function refreshAccessToken() {
+    if (!currentSession?.refreshToken) {
+        throw new Error('Tidal session expired. Please log in again.');
+    }
+
+    const { clientId, clientSecret } = getConfig();
+    const tokenData = await exchangeToken({
+        grant_type: 'refresh_token',
+        refresh_token: currentSession.refreshToken,
+        client_id: clientId
+    }, clientId, clientSecret);
+
+    currentSession = {
+        ...currentSession,
+        accessToken: tokenData.access_token,
+        refreshToken: tokenData.refresh_token || currentSession.refreshToken,
+        expiresAt: Date.now() + (tokenData.expires_in * 1000),
+        scopes: tokenData.scope || currentSession.scopes
+    };
+
+    saveSession(currentSession);
+    return currentSession;
+}
+
+async function ensureValidToken() {
+    if (!currentSession?.accessToken) {
+        throw new Error('Not authenticated with Tidal');
+    }
+
+    if (currentSession.expiresAt <= Date.now() + 60_000) {
+        await refreshAccessToken();
+    }
+}
+
+async function tidalRequest(path, options = {}) {
+    await ensureValidToken();
+
+    const url = new URL(path.startsWith('http') ? path : `${TIDAL_API_URL}${path}`);
+    const params = new URLSearchParams(url.search);
+
+    if (!params.has('countryCode') && currentSession.countryCode) {
+        params.set('countryCode', currentSession.countryCode);
+    }
+    if (!params.has('locale')) {
+        params.set('locale', DEFAULT_LOCALE);
+    }
+    if (options.limit && !params.has('page[limit]') && !params.has('limit')) {
+        params.set('page[limit]', String(options.limit));
+    }
+
+    url.search = params.toString();
+
+    const response = await fetch(url.toString(), {
+        method: options.method || 'GET',
+        headers: {
+            'Authorization': `Bearer ${currentSession.accessToken}`,
+            'Accept': 'application/vnd.api+json',
+            'Content-Type': 'application/vnd.api+json',
+            ...options.headers
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined
+    });
+
+    const text = await response.text();
+    let data = {};
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch {
+            data = { raw: text };
+        }
+    }
+
+    if (!response.ok) {
+        if (response.status === 401) {
+            await refreshAccessToken();
+            return tidalRequest(path, options);
+        }
+
+        const detail = data?.errors?.[0]?.detail || data?.userMessage || data?.message || text;
+        throw new Error(`Tidal API error (${response.status}): ${detail}`);
+    }
+
+    return data;
+}
+
+async function tidalV1Request(path, params = {}) {
+    await ensureValidToken();
+
+    const url = new URL(`${TIDAL_API_URL}${path.startsWith('/v1') ? path : `/v1${path}`}`);
+    const search = new URLSearchParams(url.search);
+
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+            search.set(key, String(value));
+        }
+    });
+
+    if (!search.has('countryCode') && currentSession.countryCode) {
+        search.set('countryCode', currentSession.countryCode);
+    }
+
+    url.search = search.toString();
+
+    const response = await fetch(url.toString(), {
+        headers: {
+            'Authorization': `Bearer ${currentSession.accessToken}`,
+            'Accept': 'application/json'
+        }
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        if (response.status === 401) {
+            await refreshAccessToken();
+            return tidalV1Request(path, params);
+        }
+        const detail = data?.userMessage || data?.message || JSON.stringify(data);
+        throw new Error(`Tidal API error (${response.status}): ${detail}`);
+    }
+
+    return data;
+}
+
+async function fetchCurrentUser() {
+    const response = await tidalRequest('/users/me');
+    const user = response.data;
+    const attrs = user?.attributes || {};
+
+    return {
+        userId: user?.id,
+        username: attrs.username || attrs.email,
+        firstName: attrs.firstName,
+        lastName: attrs.lastName,
+        countryCode: attrs.country || attrs.countryCode || 'US'
+    };
+}
+
+function waitForOAuthCallback(redirectUri) {
+    closeOAuthServer();
+
+    const redirect = new URL(redirectUri);
+    const port = Number(redirect.port || 80);
+    const expectedPath = redirect.pathname || '/callback';
+
+    return new Promise((resolve, reject) => {
+        const finish = (err, code) => {
+            closeOAuthServer();
+            if (err) reject(err);
+            else resolve(code);
+        };
+
+        oauthServer = http.createServer((req, res) => {
+            try {
+                const reqUrl = new URL(req.url, redirectUri);
+
+                if (reqUrl.pathname !== expectedPath) {
+                    res.writeHead(404);
+                    res.end('Not found');
+                    return;
+                }
+
+                const error = reqUrl.searchParams.get('error');
+                const errorDescription = reqUrl.searchParams.get('error_description');
+                if (error) {
+                    res.writeHead(400, { 'Content-Type': 'text/html' });
+                    res.end('<h2>Tidal login failed</h2><p>You can close this window and return to teleCloud.</p>');
+                    finish(new Error(errorDescription || error));
+                    return;
+                }
+
+                const code = reqUrl.searchParams.get('code');
+                const state = reqUrl.searchParams.get('state');
+
+                if (!code) {
+                    res.writeHead(400, { 'Content-Type': 'text/html' });
+                    res.end('<h2>Missing authorization code</h2>');
+                    return;
+                }
+
+                if (state !== oauthState) {
+                    res.writeHead(400, { 'Content-Type': 'text/html' });
+                    res.end('<h2>Invalid login state</h2>');
+                    finish(new Error('OAuth state mismatch'));
+                    return;
+                }
+
+                res.writeHead(200, { 'Content-Type': 'text/html' });
+                res.end('<h2>Tidal login successful</h2><p>You can close this window and return to teleCloud.</p>');
+                finish(null, code);
+            } catch (err) {
+                finish(err);
+            }
+        });
+
+        oauthServer.on('error', (err) => {
+            if (err.code === 'EADDRINUSE') {
+                finish(new Error('Tidal login port is busy. Close other teleCloud instances and try again.'));
+                return;
+            }
+            finish(err);
+        });
+
+        oauthServer.listen(port, '127.0.0.1', () => {
+            console.log(`Tidal OAuth callback listening on ${redirectUri}`);
+        });
+
+        oauthTimeout = setTimeout(() => {
+            finish(new Error('Tidal login timed out after 5 minutes'));
+        }, 5 * 60 * 1000);
+    });
+}
+
+async function login() {
+    closeOAuthServer();
+
+    const { clientId, clientSecret, redirectUri } = getConfig();
+    const { codeVerifier, codeChallenge } = generatePkcePair();
+    oauthState = crypto.randomBytes(16).toString('hex');
+
+    const authUrl = new URL(TIDAL_AUTH_URL);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('scope', TIDAL_SCOPES);
+    authUrl.searchParams.set('code_challenge_method', 'S256');
+    authUrl.searchParams.set('code_challenge', codeChallenge);
+    authUrl.searchParams.set('state', oauthState);
+
+    try {
+        const callbackPromise = waitForOAuthCallback(redirectUri);
+        const { shell } = require('electron');
+        const loginUrl = authUrl.toString();
+        console.log('Opening Tidal OAuth URL:', loginUrl);
+        console.log('Expected redirect URI:', redirectUri);
+        console.log('Requested scopes:', TIDAL_SCOPES);
+        await shell.openExternal(loginUrl);
+
+        const code = await callbackPromise;
+        const tokenData = await exchangeToken({
+            grant_type: 'authorization_code',
+            client_id: clientId,
+            code,
+            redirect_uri: redirectUri,
+            code_verifier: codeVerifier
+        }, clientId, clientSecret);
+
+        currentSession = {
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token,
+            expiresAt: Date.now() + (tokenData.expires_in * 1000),
+            scopes: tokenData.scope || TIDAL_SCOPES
+        };
+
+        const user = await fetchCurrentUser();
+        currentSession = {
+            ...currentSession,
+            userId: user.userId,
+            username: user.username,
+            countryCode: user.countryCode
+        };
+
+        saveSession(currentSession);
+        console.log('Tidal OAuth login successful for', currentSession.username);
+        return currentSession;
+    } finally {
+        closeOAuthServer();
+    }
+}
+
+function logout() {
+    closeOAuthServer();
+    currentSession = null;
+    oauthState = null;
+    store.delete('session');
+    return { success: true };
+}
+
+async function restoreSession() {
+    const savedSession = store.get('session');
+    if (!savedSession?.accessToken && !savedSession?.refreshToken) {
+        return null;
+    }
+
+    currentSession = savedSession;
+
+    if (!savedSession.expiresAt || savedSession.expiresAt <= Date.now() + 60_000) {
+        try {
+            await refreshAccessToken();
+            console.log('Tidal session refreshed');
+        } catch (err) {
+            console.error('Failed to refresh Tidal session:', err.message);
+            currentSession = null;
+            store.delete('session');
+            return null;
+        }
+    } else {
+        console.log('Tidal session restored');
+    }
+
+    return currentSession;
+}
+
+const COLLECTION_RESOURCES = {
+    tracks: 'userCollectionTracks',
+    albums: 'userCollectionAlbums',
+    artists: 'userCollectionArtists',
+    playlists: 'userCollectionPlaylists'
+};
+
+const DEFAULT_LOCALE = 'en_US';
+
+function getSession() {
+    return currentSession;
+}
+
+function parseCollectionResponse(response, relationship) {
+    const includedMap = buildIncludedMap(response.included);
+    const refs = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
+
+    return refs.map(ref => {
+        const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
+
+        if (relationship === 'tracks') {
+            return { item: normalizeTrack(resource, includedMap) };
+        }
+        if (relationship === 'albums') {
+            return normalizeAlbum(resource, includedMap);
+        }
+        if (relationship === 'artists') {
+            return normalizeArtist(resource, includedMap);
+        }
+        if (relationship === 'playlists') {
+            return normalizePlaylist(resource, includedMap);
+        }
+        return resource;
+    }).filter(Boolean);
+}
+
+async function getCollectionItems(relationship, limit = 50, include = '') {
+    if (!currentSession?.userId) throw new Error('Not logged in');
+
+    const resourceType = COLLECTION_RESOURCES[relationship];
+    if (!resourceType) {
+        throw new Error(`Unknown collection type: ${relationship}`);
+    }
+
+    // For tracks, we need to use the relationships endpoint to get the items with metadata.
+    if (relationship === 'tracks') {
+        let allTracks = [];
+        let nextUrl = `/${resourceType}/${currentSession.userId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=${limit}`;
+
+        while (nextUrl) {
+            const response = await tidalRequest(nextUrl);
+            const includedMap = buildIncludedMap(response.included);
+            const refs = Array.isArray(response.data) ? response.data : [];
+
+            const tracks = refs.map(ref => {
+                const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
+                return normalizeTrack(resource, includedMap);
+            });
+
+            allTracks.push(...tracks);
+
+            const nextLink = response.links?.next;
+            nextUrl = nextLink ? (nextLink.startsWith('http') ? new URL(nextLink).pathname + new URL(nextLink).search : nextLink) : null;
+        }
+        // The API returns tracks wrapped in { item: ... }, so we follow that.
+        return wrapItems(allTracks);
+    }
+
+    // For other types like albums and artists, the old method works.
+    const includeParam = include ? `&include=${include}` : '';
+    const response = await tidalRequest(
+        `/${resourceType}/${currentSession.userId}/items?page[limit]=${limit}${includeParam}`
+    );
+
+    return parseCollectionResponse(response, relationship);
+}
+
+async function getUserInfo() {
+    if (!currentSession) throw new Error('Not logged in');
+    const user = await fetchCurrentUser();
+    return {
+        userId: user.userId,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        countryCode: user.countryCode
+    };
+}
+
+// Track if we've already warned about mixes being unavailable
+let mixWarningShown = false;
+
+async function getForYou() {
+    if (!currentSession) throw new Error('Not logged in');
+
+    // Try the recommendations endpoint first (v2 API spec)
+    try {
+        const response = await tidalRequest('/recommendations?include=items&page[limit]=50');
+        const includedMap = buildIncludedMap(response.included);
+        const trackItems = (response.included || [])
+            .filter(r => r.type === 'tracks')
+            .map(track => ({ item: normalizeTrack(track, includedMap) }));
+
+        if (trackItems.length > 0) {
+            return {
+                mixes: Array.isArray(response.data) ? response.data : [response.data].filter(Boolean),
+                recommendations: trackItems
+            };
+        }
+    } catch (err) {
+        console.log('Recommendations endpoint unavailable:', err.message);
+    }
+
+    // Fallback to older endpoints
+    const mixEndpoints = [
+        `/userDailyMixes/${currentSession.userId}/relationships/items?include=items&page[limit]=50`,
+        `/userRecommendations/${currentSession.userId}/discoveryMixes?include=discoveryMixes&page[limit]=10`
+    ];
+
+    for (const endpoint of mixEndpoints) {
+        try {
+            const response = await tidalRequest(endpoint);
+            const includedMap = buildIncludedMap(response.included);
+            const trackItems = (response.included || [])
+                .filter(r => r.type === 'tracks')
+                .map(track => ({ item: normalizeTrack(track, includedMap) }));
+
+            if (trackItems.length > 0) {
+                return {
+                    mixes: Array.isArray(response.data) ? response.data : [response.data].filter(Boolean),
+                    recommendations: trackItems
+                };
+            }
+        } catch (err) {
+            // Silently try next endpoint
+            continue;
+        }
+    }
+
+    // Only warn once per session about unavailable mixes
+    if (!mixWarningShown) {
+        console.log('Tidal mixes/recommendations not available for this account, showing favorite tracks instead');
+        mixWarningShown = true;
+    }
+
+    return {
+        mixes: [],
+        recommendations: await getTracks(50)
+    };
+}
+
+async function getRecentPlayed() {
+    try {
+        const response = await tidalRequest('/history/tracks?include=items&page[limit]=50');
+        const includedMap = buildIncludedMap(response.included);
+        const tracks = (response.included || [])
+            .filter(r => r.type === 'tracks')
+            .map(track => ({ item: normalizeTrack(track, includedMap) }));
+        return tracks;
+    } catch (err) {
+        console.warn('Recent played history unavailable:', err.message);
+        return [];
+    }
+}
+
+async function getArtists(limit = 50) {
+    return getCollectionItems('artists', limit);
+}
+
+async function getPlaylists(limit = 50) {
+    const response = await tidalRequest(
+        `/playlists?filter[r.owners.id]=${currentSession.userId}&include=coverArt&page[limit]=${limit}&sort=-lastModifiedAt`
+    );
+
+    const includedMap = buildIncludedMap(response.included);
+    const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
+    return playlists.map(playlist => normalizePlaylist(playlist, includedMap));
+}
+
+async function getPlaylistTracks(playlistId, limit = 100) {
+    // Revert to single-call pagination with the correct include parameter
+    let allTracks = [];
+    let nextUrl = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=100`;
+
+    while (nextUrl) {
+        const response = await tidalRequest(nextUrl);
+        const includedMap = buildIncludedMap(response.included);
+        const refs = Array.isArray(response.data) ? response.data : [];
+
+        const tracks = refs.map(ref => {
+            const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
+            // The items ARE the tracks, so we normalize them directly
+            return normalizeTrack(resource, includedMap);
+        });
+
+        allTracks.push(...tracks);
+
+        const nextLink = response.links?.next;
+        nextUrl = nextLink ? (nextLink.startsWith('http') ? new URL(nextLink).pathname + new URL(nextLink).search : nextLink) : null;
+    }
+
+    return wrapItems(allTracks);
+}
+
+async function getAlbums(limit = 50) {
+    return getCollectionItems('albums', limit);
+}
+
+async function getAlbumTracks(albumId) {
+    const response = await tidalRequest(
+        `/albums/${albumId}/relationships/items?include=items&page[limit]=100`
+    );
+    const includedMap = buildIncludedMap(response.included);
+    const refs = Array.isArray(response.data) ? response.data : [];
+    return wrapItems(refs.map(ref => {
+        const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
+        return normalizeTrack(resource, includedMap);
+    }));
+}
+
+async function getTracks(limit = 50) {
+    // The new `getCollectionItems` handles the specific logic for tracks, including includes.
+    return getCollectionItems('tracks', limit);
+}
+
+async function search(query, type = 'TRACKS,ALBUMS,ARTISTS,PLAYLISTS', limit = 50) {
+    if (!currentSession) throw new Error('Not logged in');
+
+    const encodedQuery = encodeURIComponent(query);
+    const include = ['tracks', 'albums', 'artists', 'playlists'].join(',');
+    const response = await tidalRequest(`/searchResults/${encodedQuery}?include=${include}&page[limit]=${limit}`);
+    const includedMap = buildIncludedMap(response.included);
+
+    const result = {};
+    const requestedTypes = type.split(',').map(t => t.trim().toUpperCase());
+
+    if (requestedTypes.includes('TRACKS')) {
+        result.tracks = { items: wrapItems((response.included || []).filter(r => r.type === 'tracks').map(r => normalizeTrack(r, includedMap))) };
+    }
+    if (requestedTypes.includes('ALBUMS')) {
+        result.albums = { items: (response.included || []).filter(r => r.type === 'albums').map(r => normalizeAlbum(r, includedMap)) };
+    }
+    if (requestedTypes.includes('ARTISTS')) {
+        result.artists = { items: (response.included || []).filter(r => r.type === 'artists').map(r => normalizeArtist(r, includedMap)) };
+    }
+    if (requestedTypes.includes('PLAYLISTS')) {
+        result.playlists = { items: (response.included || []).filter(r => r.type === 'playlists').map(r => normalizePlaylist(r, includedMap)) };
+    }
+
+    return result;
+}
+
+function parsePlaybackManifest(manifestBase64) {
+    const manifestBuffer = Buffer.from(manifestBase64, 'base64');
+    const manifestText = manifestBuffer.toString('utf8');
+
+    if (manifestText.includes('urn:mpeg:dash')) {
+        return { url: null, codec: 'DASH', manifest: manifestText, type: 'dash' };
+    }
+
+    const manifest = JSON.parse(manifestText);
+    return {
+        url: manifest.urls?.[0] || null,
+        codec: manifest.codecs || 'aac',
+        quality: manifest.audioQuality,
+        type: manifest.urls?.[0] ? 'direct' : 'manifest'
+    };
+}
+
+async function getStreamUrl(trackId, quality = 'HIGH') {
+    if (!currentSession) throw new Error('Not logged in');
+
+    const qualityFormats = {
+        LOW: ['HEAACV1'],
+        HIGH: ['AACLC'],
+        LOSSLESS: ['FLAC'],
+        HIFI: ['FLAC'],
+        MASTER: ['FLAC_HIRES']
+    };
+
+    const formats = qualityFormats[quality] || qualityFormats.HIGH;
+    const params = new URLSearchParams({
+        usage: 'PLAYBACK',
+        manifestType: 'MPEG_DASH',
+        uriScheme: 'HTTPS',
+        adaptive: 'true'
+    });
+    formats.forEach(format => params.append('formats', format));
+
+    try {
+        const response = await tidalRequest(`/trackManifests/${trackId}?${params.toString()}`);
+        const uri = response.data?.attributes?.uri;
+        if (uri) {
+            return {
+                url: uri,
+                codec: formats[0],
+                quality
+            };
+        }
+    } catch (err) {
+        console.warn('trackManifests unavailable, trying legacy playback endpoint:', err.message);
+    }
+
+    const audioQuality = {
+        LOW: 'LOW',
+        HIGH: 'HIGH',
+        LOSSLESS: 'LOSSLESS',
+        HIFI: 'LOSSLESS',
+        MASTER: 'HI_RES_LOSSLESS'
+    }[quality] || 'HIGH';
+
+    const response = await tidalV1Request(`/tracks/${trackId}/playbackinfopostpaywall`, {
+        audioquality: audioQuality,
+        assetpresentation: 'FULL',
+        playbackmode: 'STREAM'
+    });
+
+    const parsed = parsePlaybackManifest(response.manifest);
+    if (!parsed.url && parsed.type === 'dash') {
+        throw new Error('DASH playback is not supported yet. Try HIGH quality or install DASH support in mpv.');
+    }
+    if (!parsed.url) {
+        throw new Error('No playable stream URL returned by Tidal');
+    }
+
+    return {
+        url: parsed.url,
+        codec: parsed.codec,
+        quality: audioQuality
+    };
+}
+
+async function getTracksByIds(trackIds) {
+    if (trackIds.length === 0) return [];
+
+    // Use filter[id] for v2 API
+    const response = await tidalRequest(`/tracks?filter[id]=${trackIds.join(',')}&include=artists,albums,coverArt`);
+    const includedMap = buildIncludedMap(response.included);
+
+    // Create a map to preserve order
+    const tracksById = new Map(response.data.map(track => [track.id, normalizeTrack(track, includedMap)]));
+
+    // Return in the original order
+    return trackIds.map(id => tracksById.get(id)).filter(Boolean);
+}
+
+async function getTrack(trackId) {
+    const response = await tidalRequest(`/tracks/${trackId}?include=artists,albums`);
+    return normalizeTrack(response.data, buildIncludedMap(response.included));
+}
+
+async function getAlbum(albumId) {
+    const response = await tidalRequest(`/albums/${albumId}?include=artists,coverArt`);
+    return normalizeAlbum(response.data, buildIncludedMap(response.included));
+}
+
+async function getArtist(artistId) {
+    const response = await tidalRequest(`/artists/${artistId}?include=profileArt`);
+    return normalizeArtist(response.data, buildIncludedMap(response.included));
+}
+
+module.exports = {
+    login,
+    logout,
+    restoreSession,
+    getSession,
+    getUserInfo,
+    getForYou,
+    getRecentPlayed,
+    getArtists,
+    getPlaylists,
+    getPlaylistTracks,
+    getAlbums,
+    getAlbumTracks,
+    getTracks,
+    search,
+    getStreamUrl,
+    getTrack,
+    getAlbum,
+    getArtist
+};
