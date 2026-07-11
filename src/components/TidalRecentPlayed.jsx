@@ -12,7 +12,7 @@ const TidalRecentPlayed = ({ onPlay }) => {
     const fetchRecentPlayed = async () => {
         setLoading(true);
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const res = await ipcRenderer.invoke('tidal:getRecentPlayed', 50);
             if (res.success) {
                 setTracks(res.data);
@@ -26,7 +26,7 @@ const TidalRecentPlayed = ({ onPlay }) => {
     const handlePlayTrack = async (item) => {
         const track = item.item || item;
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const streamRes = await ipcRenderer.invoke('tidal:getStreamUrl', {
                 trackId: track.id,
                 quality: 'HIGH'

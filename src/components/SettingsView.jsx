@@ -8,7 +8,7 @@ const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setApp
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const ipcRenderer = window.require('electron').ipcRenderer;
+      const ipcRenderer = window.ipcRenderer;
       const settings = await ipcRenderer.invoke('load-store', 'settings');
       if (settings && settings.downloadFolder) {
         setDownloadFolder(settings.downloadFolder);
@@ -18,7 +18,7 @@ const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setApp
       }
       
       try {
-        const devs = await window.require('electron').ipcRenderer.invoke('get-audio-devices');
+        const devs = await window.ipcRenderer.invoke('get-audio-devices');
         // Auto is default, filter out empty names or irrelevant
         const outputs = devs.filter(d => d.id !== 'auto' && d.name);
         outputs.unshift({ id: '-1', name: 'System Default' });
@@ -31,7 +31,7 @@ const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setApp
   }, []);
 
   const toggleDevice = async (deviceId) => {
-    const ipcRenderer = window.require('electron').ipcRenderer;
+    const ipcRenderer = window.ipcRenderer;
     let newDisabled = [...disabledDevices];
     if (newDisabled.includes(deviceId)) {
       newDisabled = newDisabled.filter(id => id !== deviceId);
@@ -49,7 +49,7 @@ const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setApp
   };
 
   const handleChangeLocation = async () => {
-    const ipcRenderer = window.require('electron').ipcRenderer;
+    const ipcRenderer = window.ipcRenderer;
     const folderPath = await ipcRenderer.invoke('select-music-folder');
     if (folderPath) {
       setDownloadFolder(folderPath);

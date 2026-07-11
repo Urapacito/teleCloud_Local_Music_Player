@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const fetch = require('node-fetch');
 const dotenv = require('dotenv');
 
@@ -177,6 +178,15 @@ ipcMain.handle('tidal:getArtist', async (event, artistId) => {
 
 ipcMain.handle('get-dirname', async (event, filePath) => {
   return path.dirname(filePath);
+});
+
+ipcMain.handle('read-local-file', async (event, filePath) => {
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    return { success: true, data: buffer.toString('base64') };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 function createWindow() {

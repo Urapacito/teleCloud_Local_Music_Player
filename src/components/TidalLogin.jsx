@@ -9,7 +9,7 @@ const TidalLogin = ({ onLoginSuccess }) => {
         setError('');
 
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const result = await ipcRenderer.invoke('tidal:login');
 
             if (result.success) {

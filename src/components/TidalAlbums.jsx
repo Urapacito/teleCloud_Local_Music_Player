@@ -15,7 +15,7 @@ const TidalAlbums = ({ onPlay }) => {
     const fetchAlbums = async () => {
         setLoading(true);
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const res = await ipcRenderer.invoke('tidal:getAlbums', 50);
             if (res.success) {
                 setAlbums(res.data);
@@ -29,7 +29,7 @@ const TidalAlbums = ({ onPlay }) => {
     const fetchAlbumTracks = async (albumId) => {
         setLoadingTracks(true);
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const res = await ipcRenderer.invoke('tidal:getAlbumTracks', albumId);
             if (res.success) {
                 setAlbumTracks(res.data);
@@ -53,7 +53,7 @@ const TidalAlbums = ({ onPlay }) => {
     const handlePlayTrack = async (track) => {
         const actualTrack = track.item || track;
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const streamRes = await ipcRenderer.invoke('tidal:getStreamUrl', {
                 trackId: actualTrack.id,
                 quality: 'HIGH'

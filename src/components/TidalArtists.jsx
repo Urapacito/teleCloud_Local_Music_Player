@@ -12,7 +12,7 @@ const TidalArtists = () => {
     const fetchArtists = async () => {
         setLoading(true);
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const res = await ipcRenderer.invoke('tidal:getArtists', 50);
             if (res.success) {
                 setArtists(res.data);

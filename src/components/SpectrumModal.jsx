@@ -13,15 +13,16 @@ const SpectrumModal = ({ file, onClose }) => {
       try {
         if (!file || !file.path) throw new Error("Invalid file");
 
-        // Use node 'fs' since fetch('file://') is blocked by web security
-        const fs = window.require('fs');
-        const fileBuffer = await fs.promises.readFile(file.path);
+        // Read file via IPC (window.require is unavailable in contextIsolation mode)
+        const result = await window.ipcRenderer.invoke('read-local-file', file.path);
+        if (!result.success) throw new Error(result.error || 'Failed to read file');
         
-        if (!active) return;
+        // Decode base64 → ArrayBuffer
+        const binary = atob(result.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const arrayBuffer = bytes.buffer;
         
-        // Convert Node Buffer to ArrayBuffer
-        const arrayBuffer = fileBuffer.buffer.slice(fileBuffer.byteOffset, fileBuffer.byteOffset + fileBuffer.byteLength);
-
         if (!active) return;
         
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();

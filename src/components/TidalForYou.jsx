@@ -12,7 +12,7 @@ const TidalForYou = ({ onPlay }) => {
     const fetchForYouData = async () => {
         setLoading(true);
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const res = await ipcRenderer.invoke('tidal:getForYou');
             if (res.success) {
                 setData(res.data);
@@ -25,7 +25,7 @@ const TidalForYou = ({ onPlay }) => {
 
     const handlePlayTrack = async (track) => {
         try {
-            const ipcRenderer = window.require('electron').ipcRenderer;
+            const ipcRenderer = window.ipcRenderer;
             const streamRes = await ipcRenderer.invoke('tidal:getStreamUrl', {
                 trackId: track.id,
                 quality: 'HIGH'

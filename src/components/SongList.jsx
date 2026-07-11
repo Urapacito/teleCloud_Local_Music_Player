@@ -159,8 +159,9 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
           .context-menu {
             position: fixed;
             background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
             border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
             padding: 10px 0;
             z-index: 100000;
             width: 200px;
@@ -339,7 +340,7 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
                         <span style={{ width: '24px', textAlign: 'center', marginRight: '8px' }}>♡</span> {isFav ? 'Remove Favourite' : 'Favourites'}
                       </div>
                       <div className="context-menu-item" style={{ display: 'flex', alignItems: 'center' }} onClick={() => { onCheckSpectrum && onCheckSpectrum(file); setMenuOpenIdx(null); }}>
-                        <span style={{ width: '24px', textAlign: 'center', marginRight: '8px', display: 'flex', justifyContent: 'center' }}>
+                        <span style={{ width: '24px', textAlign: 'center', marginRight: '8px', display: 'flex', justifyContent: 'center', color: 'var(--text-main)' }}>
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 10v4h3v-4H6zm5-6v16h3V4h-3zm5 8v8h3v-8h-3z" /></svg>
                         </span>
                         Check Spectrum

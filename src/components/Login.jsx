@@ -9,7 +9,7 @@ const Login = ({ onLoginSuccess }) => {
   const handleSendCode = async () => {
     setLoading(true);
     try {
-      const ipcRenderer = window.require('electron').ipcRenderer;
+      const ipcRenderer = window.ipcRenderer;
       const res = await ipcRenderer.invoke('telegram-send-code', phoneNumber);
       if (res.success) {
         setStep(2);
@@ -25,7 +25,7 @@ const Login = ({ onLoginSuccess }) => {
   const handleVerifyCode = async () => {
     setLoading(true);
     try {
-      const ipcRenderer = window.require('electron').ipcRenderer;
+      const ipcRenderer = window.ipcRenderer;
       const res = await ipcRenderer.invoke('telegram-verify-code', phoneCode);
       if (res.success) {
         // Wait a second for GramJS to finalize
