@@ -88,26 +88,42 @@ function resolveRelationship(resource, relationshipName, includedMap) {
     return includedMap.get(`${ref.type}:${ref.id}`) || ref;
 }
 
-function getArtworkUuid(resource, includedMap) {
+function getArtworkUrl(resource, includedMap, size = 640) {
     const artwork = resolveRelationship(resource, 'coverArt', includedMap)
         || resolveRelationship(resource, 'profileArt', includedMap)
         || resolveRelationship(resource, 'thumbnailArt', includedMap);
     if (!artwork) return null;
-    // In v2 API, artwork.id is a base58 hash (NOT usable for CDN URLs).
-    // artwork.attributes.mediaArtifactId is the UUID that maps to the CDN path format.
-    const mediaId = artwork?.attributes?.mediaArtifactId;
-    if (mediaId) return mediaId;
-    // Last resort: only use artwork.id if it looks like a real UUID (has dashes)
-    const rawId = artwork?.id;
-    if (rawId && rawId.includes('-')) return rawId;
-    return null;
-}
 
-function buildImageUrl(uuid, size = 640) {
-    if (!uuid) return null;
-    // Convert UUID to Tidal image path format
-    const path = uuid.replace(/-/g, '/');
-    return `https://resources.tidal.com/images/${path}/${size}x${size}.jpg`;
+    // V2 API sometimes provides a direct url
+    if (artwork.attributes?.url) {
+        return artwork.attributes.url;
+    }
+
+    // V2 API often provides an array of 'files' with different sizes
+    if (artwork.attributes?.files && Array.isArray(artwork.attributes.files) && artwork.attributes.files.length > 0) {
+        // Try to find the exact or closest size
+        let bestFile = artwork.attributes.files[0];
+        let smallestDiff = Infinity;
+        for (const file of artwork.attributes.files) {
+            if (file.meta?.width) {
+                const diff = Math.abs(file.meta.width - size);
+                if (diff < smallestDiff) {
+                    smallestDiff = diff;
+                    bestFile = file;
+                }
+            }
+        }
+        return bestFile.href;
+    }
+
+    // Fallback: Legacy UUID construction if no direct URL is provided
+    const mediaId = artwork.attributes?.mediaArtifactId || (artwork.id && artwork.id.includes('-') ? artwork.id : null);
+    if (mediaId) {
+        const path = mediaId.replace(/-/g, '/');
+        return `https://resources.tidal.com/images/${path}/${size}x${size}.jpg`;
+    }
+    
+    return null;
 }
 
 function parseIsoDuration(isoDuration) {
@@ -127,7 +143,7 @@ function normalizeTrack(resource, includedMap = new Map()) {
     const attrs = resource.attributes || resource;
     const artistResource = resolveRelationship(resource, 'artists', includedMap);
     const albumResource = resolveRelationship(resource, 'albums', includedMap);
-    const coverUuid = getArtworkUuid(albumResource, includedMap);
+    const coverUrl = getArtworkUrl(albumResource, includedMap);
 
     // Parse duration - could be seconds or ISO 8601 format
     let duration = attrs.durationInSeconds || attrs.duration;
@@ -147,7 +163,7 @@ function normalizeTrack(resource, includedMap = new Map()) {
         album: {
             id: albumResource?.id,
             title: albumResource?.attributes?.title || attrs.album?.title || '',
-            cover: buildImageUrl(coverUuid) || null
+            cover: coverUrl || null
         }
     };
 }
@@ -157,12 +173,12 @@ function normalizeAlbum(resource, includedMap = new Map()) {
 
     const attrs = resource.attributes || resource;
     const artistResource = resolveRelationship(resource, 'artists', includedMap);
-    const coverUuid = getArtworkUuid(resource, includedMap);
+    const coverUrl = getArtworkUrl(resource, includedMap);
 
     return {
         id: resource.id || attrs.id,
         title: attrs.title || attrs.name,
-        cover: buildImageUrl(coverUuid) || attrs.cover || null,
+        cover: coverUrl || attrs.cover || null,
         numberOfTracks: attrs.numberOfTracks,
         artist: artistResource ? {
             id: artistResource.id,
@@ -175,12 +191,12 @@ function normalizeArtist(resource, includedMap = new Map()) {
     if (!resource) return null;
 
     const attrs = resource.attributes || resource;
-    const coverUuid = getArtworkUuid(resource, includedMap);
+    const pictureUrl = getArtworkUrl(resource, includedMap);
 
     return {
         id: resource.id || attrs.id,
         name: attrs.name,
-        picture: buildImageUrl(coverUuid, 750) || attrs.picture || null
+        picture: pictureUrl || attrs.picture || null
     };
 }
 
@@ -188,15 +204,15 @@ function normalizePlaylist(resource, includedMap = new Map()) {
     if (!resource) return null;
 
     const attrs = resource.attributes || resource;
-    const coverUuid = getArtworkUuid(resource, includedMap);
+    const coverUrl = getArtworkUrl(resource, includedMap);
 
     return {
         uuid: resource.id || attrs.uuid,
         title: attrs.title || attrs.name,
         description: attrs.description || '',
         numberOfTracks: attrs.numberOfItems || attrs.numberOfTracks || 0,
-        image: buildImageUrl(coverUuid),
-        squareImage: buildImageUrl(coverUuid)
+        image: coverUrl || attrs.image || null,
+        squareImage: coverUrl || attrs.squareImage || null
     };
 }
 
@@ -738,6 +754,12 @@ async function getPlaylistsPage(cursor = null, limit = 15) {
         const response = await tidalRequest(url);
         const includedMap = buildIncludedMap(response.included);
         const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
+        
+        if (playlists.length > 0) {
+            console.log('[DEBUG] First playlist relationships:', JSON.stringify(playlists[0].relationships, null, 2));
+            console.log('[DEBUG] Included keys:', Array.from(includedMap.keys()));
+        }
+
         const nextCursor = response.links?.next || null;
         return {
             playlists: playlists.map(playlist => normalizePlaylist(playlist, includedMap)),
@@ -752,7 +774,7 @@ async function getPlaylistsPage(cursor = null, limit = 15) {
 
 async function getPlaylistTracks(playlistId, limit = 100) {
     let allTracks = [];
-    let nextUrl = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=100`;
+    let nextUrl = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.albums.coverArt&page[limit]=100`;
 
     while (nextUrl) {
         const response = await tidalRequest(nextUrl);
@@ -781,7 +803,7 @@ async function getPlaylistTracksPage(playlistId, cursor = null, limit = 30) {
     if (cursor) {
         url = cursor.startsWith('http') ? new URL(cursor).pathname + new URL(cursor).search : cursor;
     } else {
-        url = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=${limit}`;
+        url = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.albums.coverArt&page[limit]=${limit}`;
     }
 
     try {
@@ -859,9 +881,15 @@ async function getTracksPage(cursor = null, limit = 30) {
         const batch = orderedIds.slice(i, i + BATCH_SIZE);
         try {
             const trackResponse = await tidalRequest(
-                `/tracks?filter[id]=${batch.join(',')}&include=artists,albums,coverArt`
+                `/tracks?filter[id]=${batch.join(',')}&include=artists,albums,albums.coverArt`
             );
             const includedMap = buildIncludedMap(trackResponse.included);
+            
+            if (i === 0 && Array.isArray(trackResponse.data) && trackResponse.data.length > 0) {
+                console.log('[DEBUG] First track relationships:', JSON.stringify(trackResponse.data[0].relationships, null, 2));
+                console.log('[DEBUG] Track included keys:', Array.from(includedMap.keys()));
+            }
+
             (Array.isArray(trackResponse.data) ? trackResponse.data : []).forEach(track => {
                 const normalized = normalizeTrack(track, includedMap);
                 if (normalized) trackMap.set(normalized.id, normalized);
