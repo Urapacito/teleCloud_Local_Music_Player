@@ -122,7 +122,7 @@ function getArtworkUrl(resource, includedMap, size = 640) {
         const path = mediaId.replace(/-/g, '/');
         return `https://resources.tidal.com/images/${path}/${size}x${size}.jpg`;
     }
-    
+
     return null;
 }
 
@@ -754,12 +754,6 @@ async function getPlaylistsPage(cursor = null, limit = 15) {
         const response = await tidalRequest(url);
         const includedMap = buildIncludedMap(response.included);
         const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
-        
-        if (playlists.length > 0) {
-            console.log('[DEBUG] First playlist relationships:', JSON.stringify(playlists[0].relationships, null, 2));
-            console.log('[DEBUG] Included keys:', Array.from(includedMap.keys()));
-        }
-
         const nextCursor = response.links?.next || null;
         return {
             playlists: playlists.map(playlist => normalizePlaylist(playlist, includedMap)),
@@ -884,12 +878,6 @@ async function getTracksPage(cursor = null, limit = 30) {
                 `/tracks?filter[id]=${batch.join(',')}&include=artists,albums,albums.coverArt`
             );
             const includedMap = buildIncludedMap(trackResponse.included);
-            
-            if (i === 0 && Array.isArray(trackResponse.data) && trackResponse.data.length > 0) {
-                console.log('[DEBUG] First track relationships:', JSON.stringify(trackResponse.data[0].relationships, null, 2));
-                console.log('[DEBUG] Track included keys:', Array.from(includedMap.keys()));
-            }
-
             (Array.isArray(trackResponse.data) ? trackResponse.data : []).forEach(track => {
                 const normalized = normalizeTrack(track, includedMap);
                 if (normalized) trackMap.set(normalized.id, normalized);
@@ -939,7 +927,9 @@ function parsePlaybackManifest(manifestBase64) {
     const manifestText = manifestBuffer.toString('utf8');
 
     if (manifestText.includes('urn:mpeg:dash')) {
-        return { url: null, codec: 'DASH', manifest: manifestText, type: 'dash' };
+        // Try to extract a direct URL from the DASH manifest
+        const directUrl = extractDashAudioUrl(manifestText);
+        return { url: directUrl, codec: 'AAC', manifest: manifestText, type: directUrl ? 'direct' : 'dash' };
     }
 
     const manifest = JSON.parse(manifestText);
@@ -951,39 +941,30 @@ function parsePlaybackManifest(manifestBase64) {
     };
 }
 
+// Extract a playable URL from a DASH manifest XML string
+function extractDashAudioUrl(dashXml) {
+    // Tidal DASH manifests typically have a BaseURL element with the CDN root
+    // and SegmentTemplate with the initialization URL
+    const baseUrlMatch = dashXml.match(/<BaseURL[^>]*>([^<]+)<\/BaseURL>/i);
+    const baseUrl = baseUrlMatch?.[1]?.trim();
+
+    if (baseUrl && baseUrl.startsWith('http')) {
+        return baseUrl;
+    }
+
+    // Try extracting initialization from SegmentTemplate
+    const initMatch = dashXml.match(/initialization="([^"]+)"/i);
+    if (initMatch) {
+        const init = initMatch[1].replace('$RepresentationID$', '0');
+        if (init.startsWith('http')) return init;
+        if (baseUrl) return baseUrl + init;
+    }
+
+    return null;
+}
+
 async function getStreamUrl(trackId, quality = 'HIGH') {
     if (!currentSession) throw new Error('Not logged in');
-
-    const qualityFormats = {
-        LOW: ['HEAACV1'],
-        HIGH: ['AACLC'],
-        LOSSLESS: ['FLAC'],
-        HIFI: ['FLAC'],
-        MASTER: ['FLAC_HIRES']
-    };
-
-    const formats = qualityFormats[quality] || qualityFormats.HIGH;
-    const params = new URLSearchParams({
-        usage: 'PLAYBACK',
-        manifestType: 'MPEG_DASH',
-        uriScheme: 'HTTPS',
-        adaptive: 'true'
-    });
-    formats.forEach(format => params.append('formats', format));
-
-    try {
-        const response = await tidalRequest(`/trackManifests/${trackId}?${params.toString()}`);
-        const uri = response.data?.attributes?.uri;
-        if (uri) {
-            return {
-                url: uri,
-                codec: formats[0],
-                quality
-            };
-        }
-    } catch (err) {
-        console.warn('trackManifests unavailable, trying legacy playback endpoint:', err.message);
-    }
 
     const audioQuality = {
         LOW: 'LOW',
@@ -993,25 +974,62 @@ async function getStreamUrl(trackId, quality = 'HIGH') {
         MASTER: 'HI_RES_LOSSLESS'
     }[quality] || 'HIGH';
 
-    const response = await tidalV1Request(`/tracks/${trackId}/playbackinfopostpaywall`, {
-        audioquality: audioQuality,
-        assetpresentation: 'FULL',
-        playbackmode: 'STREAM'
-    });
+    // Try BTS (Beat The Stream) manifest — returns a direct CDN URL playable by HTML5 audio
+    try {
+        const response = await tidalV1Request(`/tracks/${trackId}/playbackinfopostpaywall`, {
+            audioQuality: audioQuality,
+            assetpresentation: 'FULL',
+            playbackmode: 'STREAM'
+        });
 
-    const parsed = parsePlaybackManifest(response.manifest);
-    if (!parsed.url && parsed.type === 'dash') {
-        throw new Error('DASH playback is not supported yet. Try HIGH quality or install DASH support in mpv.');
-    }
-    if (!parsed.url) {
-        throw new Error('No playable stream URL returned by Tidal');
+        const parsed = parsePlaybackManifest(response.manifest);
+        if (parsed.url) {
+            console.log('[Tidal] Got direct stream URL, codec:', parsed.codec);
+            return {
+                url: parsed.url,
+                codec: parsed.codec,
+                quality: audioQuality,
+                type: 'direct'
+            };
+        }
+        // It was a DASH manifest — save it for MPV fallback
+        if (parsed.type === 'dash') {
+            console.log('[Tidal] Got DASH manifest (30s cap), returning as-is for MPV');
+            return {
+                url: parsed.manifest,
+                codec: 'DASH',
+                quality: audioQuality,
+                type: 'dash'
+            };
+        }
+    } catch (err) {
+        console.warn('Legacy playback endpoint failed:', err.message);
     }
 
-    return {
-        url: parsed.url,
-        codec: parsed.codec,
-        quality: audioQuality
+    // Last resort: v2 trackManifests (MPEG_DASH URI — not playable in HTML5 audio)
+    const qualityFormats = {
+        LOW: ['HEAACV1'],
+        HIGH: ['AACLC'],
+        LOSSLESS: ['FLAC'],
+        HIFI: ['FLAC'],
+        MASTER: ['FLAC_HIRES']
     };
+    const formats = (qualityFormats[quality] || qualityFormats.HIGH);
+    const params = new URLSearchParams({
+        usage: 'PLAYBACK',
+        manifestType: 'MPEG_DASH',
+        uriScheme: 'HTTPS',
+        adaptive: 'true'
+    });
+    formats.forEach(format => params.append('formats', format));
+
+    const v2Response = await tidalRequest(`/trackManifests/${trackId}?${params.toString()}`);
+    const uri = v2Response.data?.attributes?.uri;
+    if (uri) {
+        return { url: uri, codec: formats[0], quality, type: 'dash' };
+    }
+
+    throw new Error('No playable stream URL returned by Tidal');
 }
 
 async function getTracksByIds(trackIds) {

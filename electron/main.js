@@ -238,11 +238,7 @@ function createWindow() {
 // IPC handler for fetching images — uses Electron net.request (Chromium network stack)
 // This avoids CDN 403s that raw https.get and node-fetch trigger due to missing cookies/TLS fingerprint
 ipcMain.handle('fetch-image', async (event, url) => {
-  if (!url || !url.startsWith('http')) {
-      console.log('[DEBUG fetch-image] Invalid URL provided:', url);
-      return null;
-  }
-  console.log(`[DEBUG fetch-image] Attempting to fetch: ${url}`);
+  if (!url || !url.startsWith('http')) return null;
   return new Promise((resolve) => {
     try {
       const request = net.request({ url, method: 'GET' });

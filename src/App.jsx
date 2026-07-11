@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+// import * as tidalPlayer from '@tidal-music/player'; // No longer using the web player SDK
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import Login from './components/Login';
@@ -22,6 +23,8 @@ import { STANDARD_FREQUENCIES, DEFAULT_Q, buildFfmpegEqString } from './utils/au
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const handleTrackEndedRef = useRef(null); // Stable ref to handleTrackEnded to avoid stale closures
+  const tidalPlayerEventsRef = useRef(null);
   const [musicFiles, setMusicFiles] = useState([]);
   const [playQueue, setPlayQueue] = useState([]);
   const [currentFile, setCurrentFile] = useState(null);
@@ -58,6 +61,7 @@ function App() {
   const [selectedAlbum, setSelectedAlbum] = useState(null);
   const [theme, setTheme] = useState('dark');
   const [tidalSession, setTidalSession] = useState(null);
+  // const [isTidalPlayerReady, setIsTidalPlayerReady] = useState(false); // No longer needed
 
   // EQ State
   const [eqEnabled, setEqEnabled] = useState(false);
@@ -121,28 +125,25 @@ function App() {
         setTidalSession(res.session);
       }
     });
+
+    // The Tidal Web Player SDK has been removed. MPV will be used for all playback.
   }, []);
 
-  useEffect(() => {
-    let interval;
-    if (isPlaying) {
-      interval = setInterval(() => {
-        setCurrentTime(t => {
-          const dur = currentFile?.metadata?.duration || 0;
-          if (dur > 0 && t >= dur) {
-            return dur;
-          }
-          return t + 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, currentFile]);
+  // The time ticker is now fully event-driven by the 'time-pos' event from player.js
+  // The polling useEffect hook has been removed.
+
+  // Removed all Tidal Web Player SDK event listeners.
+  // Playback state is now managed universally by the MPV backend via IPC events.
 
   useEffect(() => {
     if (isAuthenticated) {
       const ipcRenderer = window.ipcRenderer;
       ipcRenderer.invoke('get-audio-devices').then(devs => setDevices(devs));
+
+      // Listen for time position updates from the MPV player
+      ipcRenderer.on('time-pos', (event, position) => {
+        setCurrentTime(position);
+      });
 
       ipcRenderer.invoke('load-library').then(savedFiles => {
         if (savedFiles && savedFiles.length > 0) {
@@ -159,11 +160,12 @@ function App() {
       });
 
       ipcRenderer.on('track-ended', () => {
-        handleTrackEnded();
+        handleTrackEndedRef.current?.();
       });
 
       return () => {
         ipcRenderer.removeAllListeners('track-ended');
+        ipcRenderer.removeAllListeners('time-pos');
       };
     }
   }, [isAuthenticated, currentFile, musicFiles, loopMode, isShuffle]);
@@ -262,9 +264,37 @@ function App() {
 
   const playMusic = async (file, index, contextList = null) => {
     try {
-      const listToPlay = contextList || musicFiles;
+      // FIX: If playing a Tidal track without a specific context list,
+      // default to a queue of just that single song, NOT the entire local music library.
+      // The contextList should be passed from the component that calls playMusic.
+      const listToPlay = contextList || (file.source === 'tidal' ? [file] : musicFiles);
       const ipcRenderer = window.ipcRenderer;
-      await ipcRenderer.invoke('play-audio', { filePath: file.path, deviceId: selectedDevice });
+      let filePath = file.path;
+
+      if (file.source === 'tidal') {
+        // --- TIDAL: Get stream URL and play with MPV ---
+        showToast('Fetching Tidal stream...', 'info');
+        const trackId = file.tidalId || (file.id_links && file.id_links.tidal) || file.path.split('/').pop();
+        const result = await ipcRenderer.invoke('tidal:getStreamUrl', { trackId });
+
+        if (!result.success || !result.data?.url) {
+          showToast(`Could not get Tidal stream: ${result.error || 'Unknown error'}`, 'error');
+          return;
+        }
+        showToast('Playing Tidal stream...', 'success');
+        filePath = result.data.url; // Use the direct stream URL
+      }
+
+      // --- Play with MPV (works for local files and URLs) ---
+      await ipcRenderer.invoke('play-audio', { filePath, deviceId: selectedDevice });
+
+      // Volume for exclusive vs software
+      if (selectedDevice !== '-1') {
+        ipcRenderer.invoke('set-volume', 100);
+      } else {
+        ipcRenderer.invoke('set-volume', volume);
+      }
+
       setCurrentFile(file);
       setPlayQueue(listToPlay);
       setCurrentIndex(index);
@@ -274,13 +304,6 @@ function App() {
       const newRecent = [file, ...recentPlayed.filter(f => f.path !== file.path)].slice(0, 50);
       setRecentPlayed(newRecent);
       ipcRenderer.invoke('save-store', 'recent', newRecent);
-
-      // If exclusive mode, force volume to 100 on DAC
-      if (selectedDevice !== '-1') {
-        ipcRenderer.invoke('set-volume', 100);
-      } else {
-        ipcRenderer.invoke('set-volume', volume);
-      }
     } catch (err) {
       console.error(err);
     }
@@ -288,14 +311,14 @@ function App() {
 
   const handleTogglePlay = async () => {
     if (!currentFile) return;
+    // MPV handles both Tidal streams and local files universally
     const ipcRenderer = window.ipcRenderer;
     if (isPlaying) {
       await ipcRenderer.invoke('pause-audio', true);
-      setIsPlaying(false);
     } else {
       await ipcRenderer.invoke('pause-audio', false);
-      setIsPlaying(true);
     }
+    setIsPlaying(prev => !prev);
   };
 
   const handleNext = () => {
@@ -329,12 +352,13 @@ function App() {
       handleNext();
     }
   };
+  // Keep ref in sync every render so audio's 'ended' listener always calls latest version
+  handleTrackEndedRef.current = handleTrackEnded;
 
   const handleVolumeChange = (newVol) => {
     if (selectedDevice !== '-1') return; // Locked at 100% in exclusive mode
     setVolume(newVol);
-    const ipcRenderer = window.ipcRenderer;
-    ipcRenderer.invoke('set-volume', newVol);
+    window.ipcRenderer.invoke('set-volume', newVol); // Works for both via MPV
   };
 
   const handleToggleLoop = () => {
@@ -354,8 +378,7 @@ function App() {
 
   const handleSeek = (timePos) => {
     setCurrentTime(timePos);
-    const ipcRenderer = window.ipcRenderer;
-    ipcRenderer.invoke('seek-audio', timePos);
+    window.ipcRenderer.invoke('seek-audio', timePos); // Works for both via MPV
   };
 
   const handleDeleteSong = async (file, skipConfirm = false) => {
@@ -406,6 +429,7 @@ function App() {
   const handleTidalLoginSuccess = (session) => {
     setTidalSession(session);
     showToast('Successfully logged in to Tidal!');
+    // No need to provide credentials to the web player anymore
   };
 
   const handleTidalLogout = () => {

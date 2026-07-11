@@ -8,7 +8,7 @@ const TidalPlaylists = ({ onPlay }) => {
     const [loadingMore, setLoadingMore] = useState(false);
     const [nextCursor, setNextCursor] = useState(null);
     const [hasMore, setHasMore] = useState(true);
-    
+
     // Selected playlist tracks state
     const [selectedPlaylist, setSelectedPlaylist] = useState(null);
     const [playlistTracks, setPlaylistTracks] = useState([]);
@@ -16,7 +16,7 @@ const TidalPlaylists = ({ onPlay }) => {
     const [loadingMoreTracks, setLoadingMoreTracks] = useState(false);
     const [nextTracksCursor, setNextTracksCursor] = useState(null);
     const [hasMoreTracks, setHasMoreTracks] = useState(false);
-    
+
     const playlistsObserverRef = useRef(null);
     const playlistsSentinelRef = useRef(null);
 
@@ -100,7 +100,7 @@ const TidalPlaylists = ({ onPlay }) => {
             setPlaylistTracks([]);
             setHasMoreTracks(false);
             setNextTracksCursor(null);
-            
+
             setLoadingTracks(true);
             fetchTracksPage(playlist.uuid, null).finally(() => setLoadingTracks(false));
         }
@@ -129,34 +129,45 @@ const TidalPlaylists = ({ onPlay }) => {
     }, [hasMoreTracks, loadingMoreTracks, nextTracksCursor, fetchTracksPage, selectedPlaylist]);
 
     // --- Playback ---
-    const handlePlayTrack = async (track) => {
+    const handlePlayTrack = async (track, index) => {
         const actualTrack = track.item || track;
-        try {
-            const streamRes = await window.ipcRenderer.invoke('tidal:getStreamUrl', {
-                trackId: actualTrack.id,
-                quality: 'HIGH'
+        if (onPlay) {
+            // Create the track object for the song that was clicked
+            const tidalTrack = {
+                source: 'tidal',
+                tidalId: actualTrack.id,
+                name: actualTrack.title,
+                path: `tidal://track/${actualTrack.id}`,
+                metadata: {
+                    title: actualTrack.title,
+                    artist: actualTrack.artist?.name || 'Unknown Artist',
+                    album: actualTrack.album?.title || '',
+                    duration: actualTrack.duration,
+                    cover: actualTrack.album?.cover || null
+                },
+                cover: actualTrack.album?.cover || null
+            };
+
+            // Create the full context list for the queue
+            const contextList = playlistTracks.map(t => {
+                const item = t.item || t;
+                return {
+                    source: 'tidal',
+                    tidalId: item.id,
+                    name: item.title,
+                    path: `tidal://track/${item.id}`,
+                    metadata: {
+                        title: item.title,
+                        artist: item.artist?.name || 'Unknown Artist',
+                        album: item.album?.title || '',
+                        duration: item.duration,
+                        cover: item.album?.cover || null
+                    },
+                    cover: item.album?.cover || null
+                };
             });
 
-            if (streamRes.success && onPlay) {
-                const tidalTrack = {
-                    source: 'tidal',
-                    tidalId: actualTrack.id,
-                    name: actualTrack.title,
-                    path: streamRes.data.url,
-                    metadata: {
-                        title: actualTrack.title,
-                        artist: actualTrack.artist?.name || 'Unknown Artist',
-                        album: actualTrack.album?.title || '',
-                        duration: actualTrack.duration,
-                        codec: streamRes.data.codec || 'AAC',
-                        quality: streamRes.data.quality || 'HIGH'
-                    },
-                    cover: actualTrack.album?.cover || null
-                };
-                onPlay(tidalTrack, 0);
-            }
-        } catch (err) {
-            console.error('Error playing track:', err);
+            onPlay(tidalTrack, index, contextList);
         }
     };
 
@@ -241,7 +252,7 @@ const TidalPlaylists = ({ onPlay }) => {
                             {playlistTracks.map((track, tidx) => {
                                 const actualTrack = track.item || track;
                                 return (
-                                    <div key={`${actualTrack.id}-${tidx}`} onClick={() => handlePlayTrack(track)} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }} onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'} onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-tertiary)'}>
+                                    <div key={`${actualTrack.id}-${tidx}`} onClick={() => handlePlayTrack(track, tidx)} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }} onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'} onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-tertiary)'}>
                                         <div style={{ minWidth: '30px', textAlign: 'center', fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '500' }}>
                                             {tidx + 1}
                                         </div>
@@ -263,7 +274,7 @@ const TidalPlaylists = ({ onPlay }) => {
                                     </div>
                                 );
                             })}
-                            
+
                             {/* Tracks infinite scroll sentinel */}
                             <div ref={tracksSentinelRef} style={{ height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '10px' }}>
                                 {loadingMoreTracks && (

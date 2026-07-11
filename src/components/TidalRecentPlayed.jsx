@@ -25,31 +25,21 @@ const TidalRecentPlayed = ({ onPlay }) => {
 
     const handlePlayTrack = async (item) => {
         const track = item.item || item;
-        try {
-            const ipcRenderer = window.ipcRenderer;
-            const streamRes = await ipcRenderer.invoke('tidal:getStreamUrl', {
-                trackId: track.id,
-                quality: 'HIGH'
-            });
-
-            if (streamRes.success && onPlay) {
-                const tidalTrack = {
-                    source: 'tidal',
-                    tidalId: track.id,
-                    name: track.title,
-                    path: streamRes.data.url,
-                    metadata: {
-                        title: track.title,
-                        artist: track.artist?.name || 'Unknown Artist',
-                        album: track.album?.title || '',
-                        duration: track.duration
-                    },
-                    cover: track.album?.cover ? `https://resources.tidal.com/images/${track.album.cover.replace(/-/g, '/')}/640x640.jpg` : null
-                };
-                onPlay(tidalTrack, 0);
-            }
-        } catch (err) {
-            console.error('Error playing track:', err);
+        if (onPlay) {
+            const tidalTrack = {
+                source: 'tidal',
+                tidalId: track.id,
+                name: track.title,
+                path: `tidal://track/${track.id}`,
+                metadata: {
+                    title: track.title,
+                    artist: track.artist?.name || 'Unknown Artist',
+                    album: track.album?.title || '',
+                    duration: track.duration
+                },
+                cover: track.album?.cover ? `https://resources.tidal.com/images/${track.album.cover.replace(/-/g, '/')}/640x640.jpg` : null
+            };
+            onPlay(tidalTrack, 0);
         }
     };
 

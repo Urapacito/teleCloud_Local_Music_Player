@@ -54,32 +54,43 @@ const TidalTracks = ({ onPlay }) => {
         return () => observerRef.current?.disconnect();
     }, [hasMore, loadingMore, nextCursor, fetchPage]);
 
-    const handlePlayTrack = async (item) => {
+    const handlePlayTrack = async (item, index) => {
         const track = item.item || item;
-        try {
-            const streamRes = await window.ipcRenderer.invoke('tidal:getStreamUrl', {
-                trackId: track.id,
-                quality: 'HIGH'
+        if (onPlay) {
+            const tidalTrack = {
+                source: 'tidal',
+                tidalId: track.id,
+                name: track.title,
+                path: `tidal://track/${track.id}`,
+                metadata: {
+                    title: track.title,
+                    artist: track.artist?.name || 'Unknown Artist',
+                    album: track.album?.title || '',
+                    duration: track.duration,
+                    cover: track.album?.cover || null
+                },
+                cover: track.album?.cover || null
+            };
+
+            const contextList = tracks.map(t => {
+                const item = t.item || t;
+                return {
+                    source: 'tidal',
+                    tidalId: item.id,
+                    name: item.title,
+                    path: `tidal://track/${item.id}`,
+                    metadata: {
+                        title: item.title,
+                        artist: item.artist?.name || 'Unknown Artist',
+                        album: item.album?.title || '',
+                        duration: item.duration,
+                        cover: item.album?.cover || null
+                    },
+                    cover: item.album?.cover || null
+                };
             });
 
-            if (streamRes.success && onPlay) {
-                const tidalTrack = {
-                    source: 'tidal',
-                    tidalId: track.id,
-                    name: track.title,
-                    path: streamRes.data.url,
-                    metadata: {
-                        title: track.title,
-                        artist: track.artist?.name || 'Unknown Artist',
-                        album: track.album?.title || '',
-                        duration: track.duration
-                    },
-                    cover: track.album?.cover || null
-                };
-                onPlay(tidalTrack, 0);
-            }
-        } catch (err) {
-            console.error('Error playing track:', err);
+            onPlay(tidalTrack, index, contextList);
         }
     };
 
@@ -130,7 +141,7 @@ const TidalTracks = ({ onPlay }) => {
                     return (
                         <div
                             key={`${track.id}-${idx}`}
-                            onClick={() => handlePlayTrack(item)}
+                            onClick={() => handlePlayTrack(item, idx)}
                             style={{
                                 display: 'flex',
                                 alignItems: 'center',

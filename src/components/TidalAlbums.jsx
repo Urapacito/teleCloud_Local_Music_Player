@@ -50,33 +50,43 @@ const TidalAlbums = ({ onPlay }) => {
         }
     };
 
-    const handlePlayTrack = async (track) => {
+    const handlePlayTrack = async (track, index) => {
         const actualTrack = track.item || track;
-        try {
-            const ipcRenderer = window.ipcRenderer;
-            const streamRes = await ipcRenderer.invoke('tidal:getStreamUrl', {
-                trackId: actualTrack.id,
-                quality: 'HIGH'
-            });
+        if (onPlay) {
+            const tidalTrack = {
+                source: 'tidal',
+                tidalId: actualTrack.id,
+                name: actualTrack.title,
+                path: `tidal://track/${actualTrack.id}`,
+                metadata: {
+                    title: actualTrack.title,
+                    artist: actualTrack.artist?.name || selectedAlbum?.artist?.name || 'Unknown Artist',
+                    album: selectedAlbum?.title || '',
+                    duration: actualTrack.duration,
+                    cover: selectedAlbum?.cover ? `https://resources.tidal.com/images/${selectedAlbum.cover.replace(/-/g, '/')}/640x640.jpg` : null
+                },
+                cover: selectedAlbum?.cover ? `https://resources.tidal.com/images/${selectedAlbum.cover.replace(/-/g, '/')}/640x640.jpg` : null
+            };
 
-            if (streamRes.success && onPlay) {
-                const tidalTrack = {
+            const contextList = albumTracks.map(t => {
+                const item = t.item || t;
+                return {
                     source: 'tidal',
-                    tidalId: actualTrack.id,
-                    name: actualTrack.title,
-                    path: streamRes.data.url,
+                    tidalId: item.id,
+                    name: item.title,
+                    path: `tidal://track/${item.id}`,
                     metadata: {
-                        title: actualTrack.title,
-                        artist: actualTrack.artist?.name || selectedAlbum?.artist?.name || 'Unknown Artist',
+                        title: item.title,
+                        artist: item.artist?.name || selectedAlbum?.artist?.name || 'Unknown Artist',
                         album: selectedAlbum?.title || '',
-                        duration: actualTrack.duration
+                        duration: item.duration,
+                        cover: selectedAlbum?.cover ? `https://resources.tidal.com/images/${selectedAlbum.cover.replace(/-/g, '/')}/640x640.jpg` : null
                     },
                     cover: selectedAlbum?.cover ? `https://resources.tidal.com/images/${selectedAlbum.cover.replace(/-/g, '/')}/640x640.jpg` : null
                 };
-                onPlay(tidalTrack, 0);
-            }
-        } catch (err) {
-            console.error('Error playing track:', err);
+            });
+
+            onPlay(tidalTrack, index, contextList);
         }
     };
 
@@ -190,7 +200,7 @@ const TidalAlbums = ({ onPlay }) => {
                                                 return (
                                                     <div
                                                         key={tidx}
-                                                        onClick={() => handlePlayTrack(track)}
+                                                        onClick={() => handlePlayTrack(track, tidx)}
                                                         style={{
                                                             padding: '8px',
                                                             background: 'var(--bg-tertiary)',
