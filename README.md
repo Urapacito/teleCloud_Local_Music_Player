@@ -36,6 +36,7 @@ The codebase is organized into a standard Electron + Vite project structure:
 ### Prerequisites
 - [Node.js](https://nodejs.org/) (v16 or higher recommended)
 - Git
+- **mpv Media Player** (Required for audio playback and WASAPI support)
 
 ### Installation Steps
 
@@ -50,10 +51,15 @@ The codebase is organized into a standard Electron + Vite project structure:
    npm install
    ```
 
-3. **Environment Setup**
+3. **Set up mpv binaries (Windows)**
+   For the audio engine (and WASAPI bit-perfect playback) to function, you need to place the `mpv` executable files in the root folder of this project:
+   - Download the latest Windows 64-bit build of `mpv` (e.g., from the [mpv.io installation page](https://mpv.io/installation/)).
+   - Extract the archive and copy `mpv.exe` and `mpv.com` directly into the root `telecloud` folder.
+
+4. **Environment Setup**
    Ensure you have a `.env` file in the root directory configured with your necessary API keys (e.g., for Telegram or Tidal development if required).
 
-4. **Run the Development Server**
+5. **Run the Development Server**
    Start both the Vite development server and the Electron app simultaneously:
    ```bash
    npm run dev
