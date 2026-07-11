@@ -92,7 +92,15 @@ function getArtworkUuid(resource, includedMap) {
     const artwork = resolveRelationship(resource, 'coverArt', includedMap)
         || resolveRelationship(resource, 'profileArt', includedMap)
         || resolveRelationship(resource, 'thumbnailArt', includedMap);
-    return artwork?.id || artwork?.attributes?.mediaArtifactId || null;
+    if (!artwork) return null;
+    // In v2 API, artwork.id is a base58 hash (NOT usable for CDN URLs).
+    // artwork.attributes.mediaArtifactId is the UUID that maps to the CDN path format.
+    const mediaId = artwork?.attributes?.mediaArtifactId;
+    if (mediaId) return mediaId;
+    // Last resort: only use artwork.id if it looks like a real UUID (has dashes)
+    const rawId = artwork?.id;
+    if (rawId && rawId.includes('-')) return rawId;
+    return null;
 }
 
 function buildImageUrl(uuid, size = 640) {
@@ -139,7 +147,7 @@ function normalizeTrack(resource, includedMap = new Map()) {
         album: {
             id: albumResource?.id,
             title: albumResource?.attributes?.title || attrs.album?.title || '',
-            cover: buildImageUrl(coverUuid) || attrs.album?.cover || null
+            cover: buildImageUrl(coverUuid) || null
         }
     };
 }
@@ -561,27 +569,37 @@ async function getCollectionItems(relationship, limit = 50, include = '') {
         throw new Error(`Unknown collection type: ${relationship}`);
     }
 
-    // For tracks, we need to use the relationships endpoint to get the items with metadata.
+    // For tracks: the endpoint returns a SINGLE collection object.
+    // Track IDs are in data.relationships.items.data — we must then batch-fetch full details.
     if (relationship === 'tracks') {
+        // Step 1: Get collection to retrieve track ID list
+        const collectionResponse = await tidalRequest(`/${resourceType}/me?include=items`);
+
+        // data is a single object, not an array
+        const trackRefs = collectionResponse.data?.relationships?.items?.data || [];
+        if (trackRefs.length === 0) return [];
+
+        // Step 2: Batch fetch full track details (artists, albums, cover art)
+        const trackIds = trackRefs.map(ref => ref.id).slice(0, limit);
+        const BATCH_SIZE = 20;
         let allTracks = [];
-        let nextUrl = `/${resourceType}/${currentSession.userId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=${limit}`;
 
-        while (nextUrl) {
-            const response = await tidalRequest(nextUrl);
-            const includedMap = buildIncludedMap(response.included);
-            const refs = Array.isArray(response.data) ? response.data : [];
-
-            const tracks = refs.map(ref => {
-                const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
-                return normalizeTrack(resource, includedMap);
-            });
-
-            allTracks.push(...tracks);
-
-            const nextLink = response.links?.next;
-            nextUrl = nextLink ? (nextLink.startsWith('http') ? new URL(nextLink).pathname + new URL(nextLink).search : nextLink) : null;
+        for (let i = 0; i < trackIds.length; i += BATCH_SIZE) {
+            const batch = trackIds.slice(i, i + BATCH_SIZE);
+            try {
+                const trackResponse = await tidalRequest(
+                    `/tracks?filter[id]=${batch.join(',')}&include=artists,albums,coverArt`
+                );
+                const includedMap = buildIncludedMap(trackResponse.included);
+                const tracks = (Array.isArray(trackResponse.data) ? trackResponse.data : [])
+                    .map(track => normalizeTrack(track, includedMap))
+                    .filter(Boolean);
+                allTracks.push(...tracks);
+            } catch (err) {
+                console.warn(`Failed to fetch track batch at index ${i}:`, err.message);
+            }
         }
-        // The API returns tracks wrapped in { item: ... }, so we follow that.
+
         return wrapItems(allTracks);
     }
 
@@ -687,17 +705,52 @@ async function getArtists(limit = 50) {
 }
 
 async function getPlaylists(limit = 50) {
-    const response = await tidalRequest(
-        `/playlists?filter[r.owners.id]=${currentSession.userId}&include=coverArt&page[limit]=${limit}&sort=-lastModifiedAt`
-    );
-
-    const includedMap = buildIncludedMap(response.included);
-    const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
-    return playlists.map(playlist => normalizePlaylist(playlist, includedMap));
+    try {
+        const response = await tidalRequest(
+            `/playlists?filter[r.owners.id]=${currentSession.userId}&include=coverArt,thumbnailArt&page[limit]=${limit}&sort=-lastModifiedAt`
+        );
+        const includedMap = buildIncludedMap(response.included);
+        const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
+        return playlists.map(playlist => normalizePlaylist(playlist, includedMap));
+    } catch (err) {
+        console.warn('Playlist fetch failed, trying alternative endpoint:', err.message);
+        const response = await tidalRequest(
+            `/users/${currentSession.userId}/playlistsAndFavoritePlaylists?include=coverArt&page[limit]=${limit}`
+        );
+        const includedMap = buildIncludedMap(response.included);
+        const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
+        return playlists.map(playlist => normalizePlaylist(playlist, includedMap));
+    }
 }
 
+// Cursor-based paginated playlists fetch for infinite scroll
+async function getPlaylistsPage(cursor = null, limit = 15) {
+    if (!currentSession?.userId) throw new Error('Not logged in');
+
+    let url;
+    if (cursor) {
+        url = cursor.startsWith('http') ? new URL(cursor).pathname + new URL(cursor).search : cursor;
+    } else {
+        url = `/playlists?filter[r.owners.id]=${currentSession.userId}&include=coverArt,thumbnailArt&page[limit]=${limit}&sort=-lastModifiedAt`;
+    }
+
+    try {
+        const response = await tidalRequest(url);
+        const includedMap = buildIncludedMap(response.included);
+        const playlists = Array.isArray(response.data) ? response.data : [response.data].filter(Boolean);
+        const nextCursor = response.links?.next || null;
+        return {
+            playlists: playlists.map(playlist => normalizePlaylist(playlist, includedMap)),
+            nextCursor
+        };
+    } catch (err) {
+        console.warn('Paginated playlist fetch failed:', err.message);
+        return { playlists: [], nextCursor: null };
+    }
+}
+
+
 async function getPlaylistTracks(playlistId, limit = 100) {
-    // Revert to single-call pagination with the correct include parameter
     let allTracks = [];
     let nextUrl = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=100`;
 
@@ -708,7 +761,6 @@ async function getPlaylistTracks(playlistId, limit = 100) {
 
         const tracks = refs.map(ref => {
             const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
-            // The items ARE the tracks, so we normalize them directly
             return normalizeTrack(resource, includedMap);
         });
 
@@ -719,6 +771,40 @@ async function getPlaylistTracks(playlistId, limit = 100) {
     }
 
     return wrapItems(allTracks);
+}
+
+// Cursor-based paginated playlist tracks for infinite scroll
+async function getPlaylistTracksPage(playlistId, cursor = null, limit = 30) {
+    if (!currentSession?.userId) throw new Error('Not logged in');
+
+    let url;
+    if (cursor) {
+        url = cursor.startsWith('http') ? new URL(cursor).pathname + new URL(cursor).search : cursor;
+    } else {
+        url = `/playlists/${playlistId}/relationships/items?include=items,items.artists,items.albums,items.coverArt&page[limit]=${limit}`;
+    }
+
+    try {
+        const response = await tidalRequest(url);
+        const includedMap = buildIncludedMap(response.included);
+        const refs = Array.isArray(response.data) ? response.data : [];
+
+        const tracks = refs.map(ref => {
+            const resource = includedMap.get(`${ref.type}:${ref.id}`) || ref;
+            return normalizeTrack(resource, includedMap);
+        });
+
+        const nextLink = response.links?.next;
+        const nextCursor = nextLink ? (nextLink.startsWith('http') ? new URL(nextLink).pathname + new URL(nextLink).search : nextLink) : null;
+
+        return {
+            tracks: wrapItems(tracks),
+            nextCursor
+        };
+    } catch (err) {
+        console.warn('Paginated playlist tracks fetch failed:', err.message);
+        return { tracks: [], nextCursor: null };
+    }
 }
 
 async function getAlbums(limit = 50) {
@@ -738,8 +824,59 @@ async function getAlbumTracks(albumId) {
 }
 
 async function getTracks(limit = 50) {
-    // The new `getCollectionItems` handles the specific logic for tracks, including includes.
     return getCollectionItems('tracks', limit);
+}
+
+// Cursor-based paginated track fetch for infinite scroll
+async function getTracksPage(cursor = null, limit = 30) {
+    if (!currentSession?.userId) throw new Error('Not logged in');
+
+    const resourceType = COLLECTION_RESOURCES['tracks'];
+
+    // Step 1: Get a page of track IDs from the collection
+    let url;
+    if (cursor) {
+        // cursor is the full 'next' link path from previous response
+        url = cursor.startsWith('http') ? new URL(cursor).pathname + new URL(cursor).search : cursor;
+    } else {
+        url = `/${resourceType}/me/relationships/items?page[limit]=${limit}`;
+    }
+
+    const collectionResponse = await tidalRequest(url);
+    const trackRefs = Array.isArray(collectionResponse.data) ? collectionResponse.data : [];
+    const nextCursor = collectionResponse.links?.next || null;
+
+    if (trackRefs.length === 0) return { tracks: [], nextCursor: null };
+
+    // Preserve original order from collection
+    const orderedIds = trackRefs.map(ref => ref.id);
+
+    // Step 2: Batch-fetch full track details
+    const BATCH_SIZE = 20;
+    const trackMap = new Map();
+
+    for (let i = 0; i < orderedIds.length; i += BATCH_SIZE) {
+        const batch = orderedIds.slice(i, i + BATCH_SIZE);
+        try {
+            const trackResponse = await tidalRequest(
+                `/tracks?filter[id]=${batch.join(',')}&include=artists,albums,coverArt`
+            );
+            const includedMap = buildIncludedMap(trackResponse.included);
+            (Array.isArray(trackResponse.data) ? trackResponse.data : []).forEach(track => {
+                const normalized = normalizeTrack(track, includedMap);
+                if (normalized) trackMap.set(normalized.id, normalized);
+            });
+        } catch (err) {
+            console.warn('Track batch fetch error:', err.message);
+        }
+    }
+
+    // Return in original collection order
+    const tracks = orderedIds.map(id => trackMap.get(id)).filter(Boolean);
+    return {
+        tracks: wrapItems(tracks),
+        nextCursor
+    };
 }
 
 async function search(query, type = 'TRACKS,ALBUMS,ARTISTS,PLAYLISTS', limit = 50) {
@@ -888,10 +1025,13 @@ module.exports = {
     getRecentPlayed,
     getArtists,
     getPlaylists,
+    getPlaylistsPage,
     getPlaylistTracks,
+    getPlaylistTracksPage,
     getAlbums,
     getAlbumTracks,
     getTracks,
+    getTracksPage,
     search,
     getStreamUrl,
     getTrack,

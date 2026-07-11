@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, session, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fetch = require('node-fetch');
@@ -131,6 +131,33 @@ ipcMain.handle('tidal:getTracks', async (event, limit) => {
   }
 });
 
+ipcMain.handle('tidal:getTracksPage', async (event, { cursor, limit } = {}) => {
+  try {
+    const data = await tidal.getTracksPage(cursor, limit);
+    return { success: true, ...data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('tidal:getPlaylistsPage', async (event, { cursor, limit } = {}) => {
+  try {
+    const data = await tidal.getPlaylistsPage(cursor, limit);
+    return { success: true, ...data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('tidal:getPlaylistTracksPage', async (event, { playlistId, cursor, limit } = {}) => {
+  try {
+    const data = await tidal.getPlaylistTracksPage(playlistId, cursor, limit);
+    return { success: true, ...data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('tidal:search', async (event, { query, type, limit }) => {
   try {
     const data = await tidal.search(query, type, limit);
@@ -208,21 +235,48 @@ function createWindow() {
   }
 }
 
-// IPC handler for fetching images and returning as base64
+// IPC handler for fetching images — uses Electron net.request (Chromium network stack)
+// This avoids CDN 403s that raw https.get and node-fetch trigger due to missing cookies/TLS fingerprint
 ipcMain.handle('fetch-image', async (event, url) => {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image: ${response.statusText}`);
+  if (!url || !url.startsWith('http')) return null;
+  return new Promise((resolve) => {
+    try {
+      const request = net.request({ url, method: 'GET' });
+      request.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      request.setHeader('Accept', 'image/webp,image/apng,image/*,*/*;q=0.8');
+      request.setHeader('Accept-Language', 'en-US,en;q=0.9');
+      request.setHeader('Referer', 'https://listen.tidal.com/');
+
+      const chunks = [];
+      request.on('response', (response) => {
+        if (response.statusCode !== 200) {
+          console.error('Image fetch error: HTTP', response.statusCode, url.slice(0, 80));
+          resolve(null);
+          return;
+        }
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const base64 = buffer.toString('base64');
+          const sig = buffer.slice(0, 4).toString('hex');
+          let mimeType = 'image/jpeg';
+          if (sig.startsWith('89504e47')) mimeType = 'image/png';
+          else if (sig.startsWith('47494638')) mimeType = 'image/gif';
+          else if (sig.startsWith('52494646')) mimeType = 'image/webp';
+          resolve(`data:${mimeType};base64,${base64}`);
+        });
+        response.on('error', () => resolve(null));
+      });
+      request.on('error', (err) => {
+        console.error('Image fetch error:', err.message);
+        resolve(null);
+      });
+      request.end();
+    } catch (err) {
+      console.error('Image fetch error:', err.message);
+      resolve(null);
     }
-    const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
-    const mimeType = response.headers.get('content-type') || 'image/jpeg';
-    return `data:${mimeType};base64,${base64}`;
-  } catch (error) {
-    console.error('Image fetch error:', error);
-    return null; // Return null on error
-  }
+  });
 });
 
 app.whenReady().then(() => {

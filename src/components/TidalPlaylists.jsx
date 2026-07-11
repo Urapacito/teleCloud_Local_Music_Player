@@ -1,66 +1,143 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ProxiedImage from './ProxiedImage';
 
 const TidalPlaylists = ({ onPlay }) => {
+    // Playlists list state
     const [loading, setLoading] = useState(true);
     const [playlists, setPlaylists] = useState([]);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [nextCursor, setNextCursor] = useState(null);
+    const [hasMore, setHasMore] = useState(true);
+    
+    // Selected playlist tracks state
     const [selectedPlaylist, setSelectedPlaylist] = useState(null);
     const [playlistTracks, setPlaylistTracks] = useState([]);
     const [loadingTracks, setLoadingTracks] = useState(false);
+    const [loadingMoreTracks, setLoadingMoreTracks] = useState(false);
+    const [nextTracksCursor, setNextTracksCursor] = useState(null);
+    const [hasMoreTracks, setHasMoreTracks] = useState(false);
+    
+    const playlistsObserverRef = useRef(null);
+    const playlistsSentinelRef = useRef(null);
 
-    useEffect(() => {
-        fetchPlaylists();
+    const tracksObserverRef = useRef(null);
+    const tracksSentinelRef = useRef(null);
+
+    // --- Playlists Pagination ---
+    const fetchPage = useCallback(async (cursor = null) => {
+        try {
+            const res = await window.ipcRenderer.invoke('tidal:getPlaylistsPage', { cursor, limit: 15 });
+            if (res.success) {
+                setPlaylists(prev => cursor ? [...prev, ...(res.playlists || [])] : (res.playlists || []));
+                setNextCursor(res.nextCursor || null);
+                setHasMore(!!res.nextCursor);
+            } else {
+                console.error('getPlaylistsPage error:', res.error);
+                setHasMore(false);
+            }
+        } catch (err) {
+            console.error('Error fetching playlists page:', err);
+            setHasMore(false);
+        }
     }, []);
 
-    const fetchPlaylists = async () => {
+    useEffect(() => {
         setLoading(true);
-        try {
-            const ipcRenderer = window.ipcRenderer;
-            const res = await ipcRenderer.invoke('tidal:getPlaylists', 50);
-            if (res.success) {
-                setPlaylists(res.data);
-            }
-        } catch (err) {
-            console.error('Error fetching playlists:', err);
-        }
-        setLoading(false);
-    };
+        fetchPage(null).finally(() => setLoading(false));
+    }, [fetchPage]);
 
-    const fetchPlaylistTracks = async (playlistId) => {
-        setLoadingTracks(true);
+    useEffect(() => {
+        if (playlistsObserverRef.current) playlistsObserverRef.current.disconnect();
+
+        // Only observe if no playlist is selected, to avoid unnecessary fetching while viewing tracks
+        if (selectedPlaylist) return;
+
+        playlistsObserverRef.current = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting && hasMore && !loadingMore) {
+                    setLoadingMore(true);
+                    fetchPage(nextCursor).finally(() => setLoadingMore(false));
+                }
+            },
+            { threshold: 0.5 }
+        );
+
+        if (playlistsSentinelRef.current) {
+            playlistsObserverRef.current.observe(playlistsSentinelRef.current);
+        }
+
+        return () => playlistsObserverRef.current?.disconnect();
+    }, [hasMore, loadingMore, nextCursor, fetchPage, selectedPlaylist]);
+
+    // --- Playlist Tracks Pagination ---
+    const fetchTracksPage = useCallback(async (playlistId, cursor = null) => {
         try {
-            const ipcRenderer = window.ipcRenderer;
-            const res = await ipcRenderer.invoke('tidal:getPlaylistTracks', { playlistId, limit: 100 });
+            const res = await window.ipcRenderer.invoke('tidal:getPlaylistTracksPage', { playlistId, cursor, limit: 30 });
             if (res.success) {
-                setPlaylistTracks(res.data);
+                setPlaylistTracks(prev => cursor ? [...prev, ...(res.tracks || [])] : (res.tracks || []));
+                setNextTracksCursor(res.nextCursor || null);
+                setHasMoreTracks(!!res.nextCursor);
+            } else {
+                console.error('getPlaylistTracksPage error:', res.error);
+                setHasMoreTracks(false);
             }
         } catch (err) {
-            console.error('Error fetching playlist tracks:', err);
+            console.error('Error fetching playlist tracks page:', err);
+            setHasMoreTracks(false);
         }
-        setLoadingTracks(false);
-    };
+    }, []);
 
     const handlePlaylistClick = (playlist) => {
         if (selectedPlaylist?.uuid === playlist.uuid) {
+            // Deselect
             setSelectedPlaylist(null);
             setPlaylistTracks([]);
+            setHasMoreTracks(false);
+            setNextTracksCursor(null);
         } else {
+            // Select and load first page
             setSelectedPlaylist(playlist);
-            fetchPlaylistTracks(playlist.uuid);
+            setPlaylistTracks([]);
+            setHasMoreTracks(false);
+            setNextTracksCursor(null);
+            
+            setLoadingTracks(true);
+            fetchTracksPage(playlist.uuid, null).finally(() => setLoadingTracks(false));
         }
     };
 
+    useEffect(() => {
+        if (tracksObserverRef.current) tracksObserverRef.current.disconnect();
+
+        if (!selectedPlaylist) return;
+
+        tracksObserverRef.current = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting && hasMoreTracks && !loadingMoreTracks) {
+                    setLoadingMoreTracks(true);
+                    fetchTracksPage(selectedPlaylist.uuid, nextTracksCursor).finally(() => setLoadingMoreTracks(false));
+                }
+            },
+            { threshold: 0.5 }
+        );
+
+        if (tracksSentinelRef.current) {
+            tracksObserverRef.current.observe(tracksSentinelRef.current);
+        }
+
+        return () => tracksObserverRef.current?.disconnect();
+    }, [hasMoreTracks, loadingMoreTracks, nextTracksCursor, fetchTracksPage, selectedPlaylist]);
+
+    // --- Playback ---
     const handlePlayTrack = async (track) => {
         const actualTrack = track.item || track;
         try {
-            const ipcRenderer = window.ipcRenderer;
-            const streamRes = await ipcRenderer.invoke('tidal:getStreamUrl', {
+            const streamRes = await window.ipcRenderer.invoke('tidal:getStreamUrl', {
                 trackId: actualTrack.id,
                 quality: 'HIGH'
             });
 
             if (streamRes.success && onPlay) {
-                const coverUrl = actualTrack.album?.cover ? `https://resources.tidal.com/images/${actualTrack.album.cover.replace(/-/g, '/')}/640x640.jpg` : null;
                 const tidalTrack = {
                     source: 'tidal',
                     tidalId: actualTrack.id,
@@ -74,7 +151,7 @@ const TidalPlaylists = ({ onPlay }) => {
                         codec: streamRes.data.codec || 'AAC',
                         quality: streamRes.data.quality || 'HIGH'
                     },
-                    cover: coverUrl
+                    cover: actualTrack.album?.cover || null
                 };
                 onPlay(tidalTrack, 0);
             }
@@ -90,6 +167,7 @@ const TidalPlaylists = ({ onPlay }) => {
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
+    // --- Render ---
     if (loading) {
         return (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
@@ -133,6 +211,18 @@ const TidalPlaylists = ({ onPlay }) => {
                 ))}
             </div>
 
+            {/* Playlists infinite scroll sentinel */}
+            {!selectedPlaylist && (
+                <div ref={playlistsSentinelRef} style={{ height: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {loadingMore && (
+                        <div style={{ width: '28px', height: '28px', border: '3px solid var(--bg-hover)', borderTop: '3px solid var(--accent-red)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                    )}
+                    {!hasMore && playlists.length > 0 && (
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>All {playlists.length} playlists loaded</p>
+                    )}
+                </div>
+            )}
+
             {selectedPlaylist && (
                 <div style={{ marginTop: '20px', padding: '20px', background: 'var(--bg-secondary)', borderRadius: '12px' }}>
                     <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '15px' }}>
@@ -142,7 +232,7 @@ const TidalPlaylists = ({ onPlay }) => {
                         </span>
                     </h3>
 
-                    {loadingTracks ? (
+                    {loadingTracks && playlistTracks.length === 0 ? (
                         <div style={{ textAlign: 'center', padding: '40px' }}>
                             <div style={{ width: '40px', height: '40px', border: '4px solid var(--bg-hover)', borderTop: '4px solid var(--accent-red)', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto' }}></div>
                         </div>
@@ -150,14 +240,13 @@ const TidalPlaylists = ({ onPlay }) => {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                             {playlistTracks.map((track, tidx) => {
                                 const actualTrack = track.item || track;
-                                const coverUrl = actualTrack.album?.cover ? `https://resources.tidal.com/images/${actualTrack.album.cover.replace(/-/g, '/')}/160x160.jpg` : null;
                                 return (
-                                    <div key={tidx} onClick={() => handlePlayTrack(track)} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }} onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'} onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-tertiary)'}>
+                                    <div key={`${actualTrack.id}-${tidx}`} onClick={() => handlePlayTrack(track)} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }} onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-hover)'} onMouseOut={(e) => e.currentTarget.style.background = 'var(--bg-tertiary)'}>
                                         <div style={{ minWidth: '30px', textAlign: 'center', fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '500' }}>
                                             {tidx + 1}
                                         </div>
                                         <div style={{ width: '48px', height: '48px', borderRadius: '4px', overflow: 'hidden', backgroundColor: 'var(--bg-secondary)', flexShrink: 0 }}>
-                                            <ProxiedImage src={coverUrl} alt={actualTrack.album.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                            <ProxiedImage src={actualTrack.album?.cover || null} alt={actualTrack.album?.title || 'Unknown'} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                         </div>
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -174,6 +263,16 @@ const TidalPlaylists = ({ onPlay }) => {
                                     </div>
                                 );
                             })}
+                            
+                            {/* Tracks infinite scroll sentinel */}
+                            <div ref={tracksSentinelRef} style={{ height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '10px' }}>
+                                {loadingMoreTracks && (
+                                    <div style={{ width: '24px', height: '24px', border: '3px solid var(--bg-hover)', borderTop: '3px solid var(--accent-red)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                                )}
+                                {!hasMoreTracks && playlistTracks.length > 0 && (
+                                    <p style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>End of playlist</p>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>

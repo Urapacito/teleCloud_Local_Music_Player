@@ -7,3 +7,9 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 });
 
 contextBridge.exposeInMainWorld('shell', shell);
+
+// Expose electronAPI for ProxiedImage and other components
+contextBridge.exposeInMainWorld('electronAPI', {
+    fetchImage: (url) => ipcRenderer.invoke('fetch-image', url),
+    readLocalFile: (filePath) => ipcRenderer.invoke('read-local-file', filePath),
+});
