@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ProxiedImage from './ProxiedImage';
 
 const TidalPlaylists = ({ onPlay }) => {
@@ -8,6 +8,7 @@ const TidalPlaylists = ({ onPlay }) => {
     const [loadingMore, setLoadingMore] = useState(false);
     const [nextCursor, setNextCursor] = useState(null);
     const [hasMore, setHasMore] = useState(true);
+    const [sortBy, setSortBy] = useState('newest'); // newest, oldest, name-asc, name-desc
 
     // Selected playlist tracks state
     const [selectedPlaylist, setSelectedPlaylist] = useState(null);
@@ -178,6 +179,22 @@ const TidalPlaylists = ({ onPlay }) => {
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
+    // Sort playlists based on sortBy state
+    const sortedPlaylists = useMemo(() => {
+        const sorted = [...playlists];
+        switch (sortBy) {
+            case 'name-asc':
+                return sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+            case 'name-desc':
+                return sorted.sort((a, b) => (b.title || '').localeCompare(a.title || ''));
+            case 'oldest':
+                return sorted.reverse(); // Reverse the newest-first order from API
+            case 'newest':
+            default:
+                return sorted; // Keep API order (already sorted by -lastModifiedAt)
+        }
+    }, [playlists, sortBy]);
+
     // --- Render ---
     if (loading) {
         return (
@@ -204,10 +221,30 @@ const TidalPlaylists = ({ onPlay }) => {
 
     return (
         <div>
-            <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '20px' }}>Your Playlists</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0 }}>Your Playlists</h2>
+                <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--bg-hover)',
+                        background: 'var(--bg-tertiary)',
+                        color: 'var(--text-primary)',
+                        fontSize: '13px',
+                        cursor: 'pointer'
+                    }}
+                >
+                    <option value="newest">Newest First</option>
+                    <option value="oldest">Oldest First</option>
+                    <option value="name-asc">Name: A → Z</option>
+                    <option value="name-desc">Name: Z → A</option>
+                </select>
+            </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '20px', marginBottom: '30px' }}>
-                {playlists.map((playlist, idx) => (
+                {sortedPlaylists.map((playlist, idx) => (
                     <div key={idx} onClick={() => handlePlaylistClick(playlist)} style={{ background: 'var(--bg-tertiary)', borderRadius: '12px', padding: '15px', cursor: 'pointer', transition: 'all 0.2s', border: selectedPlaylist?.uuid === playlist.uuid ? '2px solid var(--accent-red)' : '2px solid transparent' }} onMouseOver={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.transform = 'translateY(-4px)'; }} onMouseOut={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.transform = 'translateY(0)'; }}>
                         <div style={{ width: '100%', paddingTop: '100%', position: 'relative', backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', overflow: 'hidden', marginBottom: '12px' }}>
                             <ProxiedImage src={playlist.image || playlist.squareImage} alt={playlist.title} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }} />

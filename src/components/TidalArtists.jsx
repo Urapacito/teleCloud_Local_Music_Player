@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ProxiedImage from './ProxiedImage';
 
 const TidalArtists = () => {
     const [loading, setLoading] = useState(true);
     const [artists, setArtists] = useState([]);
+    const [sortBy, setSortBy] = useState('name-asc'); // name-asc, name-desc
 
     useEffect(() => {
         fetchArtists();
@@ -22,6 +23,22 @@ const TidalArtists = () => {
         }
         setLoading(false);
     };
+
+    // Sort artists based on sortBy state
+    const sortedArtists = useMemo(() => {
+        const sorted = [...artists];
+        return sortBy === 'name-desc'
+            ? sorted.sort((a, b) => {
+                const nameA = (a.item?.name || a.name || '').toLowerCase();
+                const nameB = (b.item?.name || b.name || '').toLowerCase();
+                return nameB.localeCompare(nameA);
+            })
+            : sorted.sort((a, b) => {
+                const nameA = (a.item?.name || a.name || '').toLowerCase();
+                const nameB = (b.item?.name || b.name || '').toLowerCase();
+                return nameA.localeCompare(nameB);
+            });
+    }, [artists, sortBy]);
 
     if (loading) {
         return (
@@ -62,9 +79,27 @@ const TidalArtists = () => {
 
     return (
         <div>
-            <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '20px' }}>Your Artists</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0 }}>Your Artists</h2>
+                <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--bg-hover)',
+                        background: 'var(--bg-tertiary)',
+                        color: 'var(--text-primary)',
+                        fontSize: '13px',
+                        cursor: 'pointer'
+                    }}
+                >
+                    <option value="name-asc">Name: A → Z</option>
+                    <option value="name-desc">Name: Z → A</option>
+                </select>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '24px' }}>
-                {artists.map((item, idx) => {
+                {sortedArtists.map((item, idx) => {
                     const artist = item.item || item;
                     return (
                         <div

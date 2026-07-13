@@ -549,6 +549,7 @@ function App() {
             onNavClick={setCurrentView}
             setSelectedAlbum={setSelectedAlbum}
             setSearchQuery={setSearchQuery}
+            tidalSession={tidalSession}
           />
         ) : currentView === 'settings' ? (
           <SettingsView currentView={currentView} theme={theme} setTheme={setTheme} setDisabledDevices={setDisabledDevices} />

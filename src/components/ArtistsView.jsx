@@ -14,7 +14,7 @@ const ArtistsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddP
       
       splitArtists.forEach(artist => {
         if (!artistMap[artist]) {
-          artistMap[artist] = { name: artist, songs: [] };
+          artistMap[artist] = { name: artist, songs: [], cover: file.cover };
         }
         artistMap[artist].songs.push(file);
       });
@@ -67,7 +67,11 @@ const ArtistsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddP
               onMouseOut={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
             >
               <div style={{ width: '100px', height: '100px', borderRadius: '50%', backgroundColor: 'var(--bg-tertiary)', marginBottom: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 5px 15px rgba(0,0,0,0.3)' }}>
-                <svg viewBox="0 0 24 24" width="50" height="50" fill="#777"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                {artist.cover ? (
+                  <img src={artist.cover} alt="artist cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <svg viewBox="0 0 24 24" width="50" height="50" fill="#777"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                )}
               </div>
               <div style={{ fontWeight: 'bold', textAlign: 'center', width: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{artist.name}</div>
               <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '5px' }}>{artist.songs.length} songs</div>

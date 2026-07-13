@@ -22,6 +22,8 @@ async function scanDirectory(dirPath) {
             const mm = await import('music-metadata');
             const parsed = await mm.parseFile(filePath, { duration: true, skipCovers: false });
             let lyricsStr = '';
+
+            // Check for lyrics in parsed.common.lyrics (LYRICS tag)
             if (parsed.common.lyrics && parsed.common.lyrics.length > 0) {
               lyricsStr = parsed.common.lyrics.map(l => {
                 if (typeof l === 'string') return l;
@@ -35,6 +37,31 @@ async function scanDirectory(dirPath) {
                 if (l && l.text) return l.text;
                 return JSON.stringify(l);
               }).join('\n');
+            }
+
+            // Also check native tags for UNSYNCEDLYRICS or UNSYNCED LYRICS
+            if (!lyricsStr && parsed.native) {
+              for (const tagType in parsed.native) {
+                const tags = parsed.native[tagType];
+                for (const tag of tags) {
+                  // Check for various unsynced lyrics tag names
+                  if (tag.id && (
+                    tag.id.toUpperCase() === 'UNSYNCEDLYRICS' ||
+                    tag.id.toUpperCase() === 'UNSYNCED LYRICS' ||
+                    tag.id.toUpperCase() === 'USLT' ||
+                    tag.id.toUpperCase() === 'LYRICS'
+                  )) {
+                    if (typeof tag.value === 'string') {
+                      lyricsStr = tag.value;
+                      break;
+                    } else if (tag.value && tag.value.text) {
+                      lyricsStr = tag.value.text;
+                      break;
+                    }
+                  }
+                }
+                if (lyricsStr) break;
+              }
             }
 
             metadata = {
@@ -56,7 +83,7 @@ async function scanDirectory(dirPath) {
             console.error(`Error parsing metadata for ${file}`, e);
             metadata = { title: file, artist: 'Unknown Artist', album: 'Unknown Album', duration: 0 };
           }
-          
+
           results.push({
             name: file,
             path: filePath,

@@ -1,9 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import TidalForYou from './TidalForYou';
-import TidalRecentPlayed from './TidalRecentPlayed';
-import TidalArtists from './TidalArtists';
 import TidalPlaylists from './TidalPlaylists';
-import TidalAlbums from './TidalAlbums';
 import TidalTracks from './TidalTracks';
 
 const TidalView = ({ session, onLogout, onPlay }) => {
@@ -59,14 +55,14 @@ const TidalView = ({ session, onLogout, onPlay }) => {
                     marginBottom: '20px'
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                        <svg viewBox="0 0 24 24" width="32" height="32" fill="var(--accent-red)">
+                        <svg viewBox="0 0 24 24" width="32" height="32" fill="var(--accent-red)" style={{ transform: 'rotate(180deg)' }}>
                             <path d="M12.012 3.992L8.008 7.996 12.012 12l4.004-4.004L12.012 3.992zm0 8.016L8.008 16.012l4.004 4.004 4.004-4.004-4.004-4.004zm-8.016 0l-4.004 4.004L4.004 20l4.004-4.004-4.004-4.004zm16.032 0l-4.004 4.004L20.028 20l4.004-4.004-4.004-4.004z" />
                         </svg>
                         <div>
                             <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>Tidal</h1>
                             {userInfo && (
                                 <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                                    {userInfo.firstName || userInfo.username || session.username}
+                                    Welcome to Tidal, {userInfo.firstName || userInfo.username || session.username} !
                                 </p>
                             )}
                         </div>
@@ -141,11 +137,7 @@ const TidalView = ({ session, onLogout, onPlay }) => {
                 padding: '30px',
                 paddingBottom: '100px'
             }}>
-                {activeTab === 'foryou' && <TidalForYou onPlay={onPlay} />}
-                {activeTab === 'recent' && <TidalRecentPlayed onPlay={onPlay} />}
-                {activeTab === 'artists' && <TidalArtists />}
                 {activeTab === 'playlists' && <TidalPlaylists onPlay={onPlay} />}
-                {activeTab === 'albums' && <TidalAlbums onPlay={onPlay} />}
                 {activeTab === 'tracks' && <TidalTracks onPlay={onPlay} />}
             </div>
         </div>
