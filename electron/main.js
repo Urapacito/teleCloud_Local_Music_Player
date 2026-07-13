@@ -203,6 +203,26 @@ ipcMain.handle('tidal:getArtist', async (event, artistId) => {
   }
 });
 
+// 🔍 SUBSCRIPTION VERIFICATION: Get track manifest
+ipcMain.handle('tidal:getTrackManifest', async (event, { trackId, format }) => {
+  try {
+    const data = await tidal.getTrackManifest(trackId, format);
+    return data; // Already has success/error structure
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// 🔍 SUBSCRIPTION VERIFICATION: Test subscription status
+ipcMain.handle('tidal:testSubscription', async (event, { trackId } = {}) => {
+  try {
+    const data = await tidal.testSubscription(trackId);
+    return data; // Already has success/error structure
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle('get-dirname', async (event, filePath) => {
   return path.dirname(filePath);
 });

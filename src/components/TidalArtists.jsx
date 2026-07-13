@@ -1,10 +1,23 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import ProxiedImage from './ProxiedImage';
 
 const TidalArtists = () => {
     const [loading, setLoading] = useState(true);
     const [artists, setArtists] = useState([]);
     const [sortBy, setSortBy] = useState('name-asc'); // name-asc, name-desc
+    const [sortMenuOpen, setSortMenuOpen] = useState(false);
+    const sortMenuRef = useRef(null);
+
+    // Click outside to close sort menu
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (sortMenuRef.current && !sortMenuRef.current.contains(e.target)) {
+                setSortMenuOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     useEffect(() => {
         fetchArtists();
@@ -23,6 +36,13 @@ const TidalArtists = () => {
         }
         setLoading(false);
     };
+
+    const sortOptions = [
+        { value: 'name-asc', label: 'Name: A → Z' },
+        { value: 'name-desc', label: 'Name: Z → A' }
+    ];
+
+    const currentSortLabel = sortOptions.find(opt => opt.value === sortBy)?.label || 'Sort';
 
     // Sort artists based on sortBy state
     const sortedArtists = useMemo(() => {
@@ -81,22 +101,75 @@ const TidalArtists = () => {
         <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
                 <h2 style={{ fontSize: '20px', fontWeight: 'bold', margin: 0 }}>Your Artists</h2>
-                <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value)}
-                    style={{
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        border: '1px solid var(--bg-hover)',
-                        background: 'var(--bg-tertiary)',
-                        color: 'var(--text-primary)',
-                        fontSize: '13px',
-                        cursor: 'pointer'
-                    }}
-                >
-                    <option value="name-asc">Name: A → Z</option>
-                    <option value="name-desc">Name: Z → A</option>
-                </select>
+
+                {/* Custom Sort Dropdown */}
+                <div ref={sortMenuRef} style={{ position: 'relative' }}>
+                    <button
+                        onClick={() => setSortMenuOpen(!sortMenuOpen)}
+                        style={{
+                            padding: '8px 16px',
+                            borderRadius: '20px',
+                            border: 'none',
+                            background: 'var(--bg-tertiary)',
+                            color: 'var(--text-primary)',
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            minWidth: '140px',
+                            justifyContent: 'space-between'
+                        }}
+                    >
+                        <span>{currentSortLabel}</span>
+                        <span style={{ fontSize: '10px' }}>▼</span>
+                    </button>
+
+                    {sortMenuOpen && (
+                        <div style={{
+                            position: 'absolute',
+                            top: '100%',
+                            right: 0,
+                            marginTop: '4px',
+                            background: 'var(--bg-tertiary)',
+                            borderRadius: '8px',
+                            overflow: 'hidden',
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                            zIndex: 1000,
+                            minWidth: '180px'
+                        }}>
+                            {sortOptions.map(option => (
+                                <div
+                                    key={option.value}
+                                    onClick={() => {
+                                        setSortBy(option.value);
+                                        setSortMenuOpen(false);
+                                    }}
+                                    style={{
+                                        padding: '12px 16px',
+                                        cursor: 'pointer',
+                                        background: sortBy === option.value ? 'var(--accent-red)' : 'transparent',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '13px',
+                                        transition: 'background 0.2s'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        if (sortBy !== option.value) {
+                                            e.currentTarget.style.background = 'var(--bg-hover)';
+                                        }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        if (sortBy !== option.value) {
+                                            e.currentTarget.style.background = 'transparent';
+                                        }
+                                    }}
+                                >
+                                    {option.label}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '24px' }}>
                 {sortedArtists.map((item, idx) => {

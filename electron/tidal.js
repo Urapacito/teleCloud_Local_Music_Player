@@ -485,6 +485,15 @@ async function login() {
             code_verifier: codeVerifier
         }, clientId, clientSecret);
 
+        // 🔍 DEBUG: OAuth Token Details
+        console.log('===== TIDAL AUTH DEBUG =====');
+        console.log('Access token:', tokenData.access_token ? 'Present ✅' : 'Missing ❌');
+        console.log('Token scopes:', tokenData.scope || TIDAL_SCOPES);
+        console.log('Token type:', tokenData.token_type);
+        console.log('Expires in:', tokenData.expires_in, 'seconds');
+        console.log('Refresh token:', tokenData.refresh_token ? 'Present ✅' : 'Missing ❌');
+        console.log('==========================');
+
         currentSession = {
             accessToken: tokenData.access_token,
             refreshToken: tokenData.refresh_token,
@@ -1067,6 +1076,109 @@ async function getArtist(artistId) {
     return normalizeArtist(response.data, buildIncludedMap(response.included));
 }
 
+// 🔍 SUBSCRIPTION VERIFICATION: Get track manifest for playback
+async function getTrackManifest(trackId, formats = ['FLAC', 'FLAC_HIRES', 'AACLC', 'HEAACV1']) {
+    try {
+        // Convert formats to array if it's a string
+        const formatsList = Array.isArray(formats) ? formats : [formats];
+        console.log(`🔍 [Tidal] Fetching track manifest for track ${trackId}, formats: ${formatsList.join(', ')}`);
+
+        // Use MPEG_DASH and DATA scheme to match web player's working parameters
+        const params = new URLSearchParams({
+            manifestType: 'MPEG_DASH',  // ✅ FIXED: Was HLS, now MPEG_DASH like web player
+            uriScheme: 'DATA',           // ✅ FIXED: Was HTTPS, now DATA like web player
+            usage: 'PLAYBACK',
+            adaptive: 'true'
+        });
+
+        // Add multiple formats like web player does
+        formatsList.forEach(format => params.append('formats', format));
+
+        const response = await tidalRequest(`/trackManifests/${trackId}?${params.toString()}`);
+
+        const data = response.data?.attributes || {};
+        console.log('📊 [Tidal] Track manifest response:', {
+            uri: data.uri ? 'Present ✅' : 'Missing ❌',
+            trackPresentation: data.trackPresentation,
+            previewReason: data.previewReason || 'NONE',
+            formats: data.formats,
+            drmData: data.drmData ? 'Present ✅' : 'Missing ❌'
+        });
+
+        return {
+            success: true,
+            uri: data.uri,
+            drmData: data.drmData,
+            trackPresentation: data.trackPresentation,
+            previewReason: data.previewReason,
+            formats: data.formats
+        };
+    } catch (err) {
+        console.error('❌ [Tidal] Track manifest request failed:', err.message);
+        return { success: false, error: err.message };
+    }
+}
+
+// 🔍 SUBSCRIPTION VERIFICATION: Test subscription status
+async function testSubscription(testTrackId = '75413011') {
+    try {
+        console.log('\n🔍 ===== TIDAL SUBSCRIPTION TEST =====');
+
+        // Step 1: Check session info
+        console.log('📝 Step 1: Checking session...');
+        if (!currentSession) {
+            console.log('❌ Not logged in');
+            return { success: false, error: 'Not logged in' };
+        }
+        console.log('✅ Session found');
+        console.log('   User:', currentSession.username);
+        console.log('   Scopes:', currentSession.scopes);
+
+        // Step 2: Try to get track manifest
+        console.log('\n📝 Step 2: Testing trackManifest API...');
+        const manifest = await getTrackManifest(testTrackId, 'FLAC');
+
+        if (!manifest.success) {
+            console.log('❌ trackManifest API failed:', manifest.error);
+            return manifest;
+        }
+
+        console.log('\n📊 RESULTS:');
+        console.log('   Track Presentation:', manifest.trackPresentation);
+        console.log('   Preview Reason:', manifest.previewReason || 'NONE');
+        console.log('   Stream URI:', manifest.uri ? 'Available ✅' : 'Not available ❌');
+        console.log('   DRM Data:', manifest.drmData ? 'Present ✅' : 'Not present ❌');
+        console.log('   Formats:', manifest.formats);
+
+        // Step 3: Interpret results
+        console.log('\n🎯 INTERPRETATION:');
+        if (manifest.trackPresentation === 'FULL' && (!manifest.previewReason || manifest.previewReason === 'NONE')) {
+            console.log('✅✅✅ SUBSCRIPTION WORKS! Full playback authorized.');
+            console.log('   You can proceed with DRM implementation.');
+            return {
+                success: true,
+                subscriptionActive: true,
+                message: 'Subscription verified - ready for full playback',
+                details: manifest
+            };
+        } else {
+            console.log('⚠️ Subscription not recognized or preview only');
+            console.log('   Reason:', manifest.previewReason || 'Unknown');
+            return {
+                success: true,
+                subscriptionActive: false,
+                message: `Preview only: ${manifest.previewReason || 'Unknown reason'}`,
+                details: manifest
+            };
+        }
+    } catch (err) {
+        console.error('❌ Subscription test failed:', err.message);
+        return { success: false, error: err.message };
+    } finally {
+        console.log('===================================\n');
+    }
+}
+
 module.exports = {
     login,
     logout,
@@ -1088,5 +1200,7 @@ module.exports = {
     getStreamUrl,
     getTrack,
     getAlbum,
-    getArtist
+    getArtist,
+    getTrackManifest,
+    testSubscription
 };
