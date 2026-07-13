@@ -11,6 +11,14 @@ let currentIpcPipe = '';
 let currentEqFilter = '';
 let lastTimePos = 0; // Store last known time
 
+// Audio settings
+let currentAudioSettings = {
+  replayGain: 'no',
+  crossfade: 0,
+  maxBitDepth: null,
+  maxSampleRate: null
+};
+
 ipcMain.handle('get-audio-devices', () => {
   try {
     const output = execSync(`"${mpvPath}" --audio-device=help`, { encoding: 'utf8' });
@@ -70,6 +78,22 @@ ipcMain.handle('play-audio', (event, { filePath, deviceId }) => {
     filePath
   ];
 
+  // Apply ReplayGain
+  if (currentAudioSettings.replayGain && currentAudioSettings.replayGain !== 'no') {
+    args.unshift(`--replaygain=${currentAudioSettings.replayGain}`);
+  }
+
+  // Apply max sampling settings
+  // Note: Use s32 for 24-bit because Windows doesn't support packed s24 format well
+  if (currentAudioSettings.maxBitDepth) {
+    const formatMap = { 16: 's16', 24: 's32', 32: 's32' };
+    const format = formatMap[currentAudioSettings.maxBitDepth] || 's32';
+    args.unshift(`--audio-format=${format}`);
+  }
+  if (currentAudioSettings.maxSampleRate) {
+    args.unshift(`--audio-samplerate=${currentAudioSettings.maxSampleRate * 1000}`);
+  }
+
   if (deviceId && deviceId !== '-1' && deviceId !== -1) {
     args.unshift(`--audio-device=${deviceId}`);
     args.unshift('--audio-exclusive=yes');
@@ -83,25 +107,64 @@ ipcMain.handle('play-audio', (event, { filePath, deviceId }) => {
     windowsHide: true
   });
 
+  // Capture stderr to log MPV errors
+  let stderrOutput = '';
+  if (currentPlayProcess.stderr) {
+    currentPlayProcess.stderr.on('data', (data) => {
+      stderrOutput += data.toString();
+    });
+  }
+
   currentPlayProcess.on('error', (err) => {
-    console.error('MPV error:', err);
+    console.error('MPV spawn error:', err);
+    const win = require('electron').BrowserWindow.getAllWindows()[0];
+    if (win) win.webContents.send('playback-error', { error: err.message });
   });
 
-  currentPlayProcess.on('exit', () => {
-    // Notify frontend that track ended
+  currentPlayProcess.on('exit', (code, signal) => {
     const win = require('electron').BrowserWindow.getAllWindows()[0];
-    if (win) win.webContents.send('track-ended');
+
+    // Only send track-ended if it's a normal exit (code 0)
+    // If MPV crashed or failed (non-zero code), log the error
+    if (code === 0 || code === null) {
+      // Normal exit - track finished playing
+      if (win) win.webContents.send('track-ended');
+    } else {
+      // MPV crashed or failed to start
+      console.error(`MPV exited with code ${code}, signal ${signal}`);
+      if (stderrOutput) {
+        console.error('MPV stderr:', stderrOutput.substring(0, 500));
+      }
+      console.error('Failed MPV arguments:', args.join(' '));
+
+      // Send error to frontend to prevent infinite loop
+      if (win) {
+        win.webContents.send('playback-error', {
+          error: `MPV failed with code ${code}`,
+          details: stderrOutput.substring(0, 200)
+        });
+      }
+    }
   });
 
   // Connect to MPV IPC after a short delay
-  const connectWithRetry = (retries = 10, targetPipe = currentIpcPipe) => {
+  // Increase retries and delay when sampling rate conversion is active (takes longer to initialize)
+  const hasResampling = currentAudioSettings.maxBitDepth || currentAudioSettings.maxSampleRate;
+  const maxRetries = hasResampling ? 20 : 10;  // 20 retries = 10 seconds for resampling
+  const retryDelay = hasResampling ? 500 : 500;
+
+  const connectWithRetry = (retries = maxRetries, targetPipe = currentIpcPipe) => {
     try {
       mpvSocket = net.createConnection(targetPipe);
       mpvSocket.on('error', (err) => {
         if (retries > 0 && currentPlayProcess && targetPipe === currentIpcPipe) {
-          setTimeout(() => connectWithRetry(retries - 1, targetPipe), 500);
+          setTimeout(() => connectWithRetry(retries - 1, targetPipe), retryDelay);
         } else {
           console.log('MPV IPC Error:', err.message);
+          // If we still can't connect after all retries, MPV likely crashed
+          if (currentPlayProcess && currentPlayProcess.exitCode === null) {
+            console.error('MPV process is running but IPC connection failed after', maxRetries, 'attempts');
+          }
         }
       });
       mpvSocket.on('connect', () => {
@@ -132,7 +195,7 @@ ipcMain.handle('play-audio', (event, { filePath, deviceId }) => {
     } catch (e) { }
   };
 
-  setTimeout(() => connectWithRetry(10, currentIpcPipe), 500);
+  setTimeout(() => connectWithRetry(maxRetries, currentIpcPipe), 500);
 
   return { success: true };
 });
@@ -195,4 +258,37 @@ ipcMain.handle('set-eq', (event, filterString) => {
     mpvSocket.write(JSON.stringify(cmd) + '\n');
   }
 });
+
+// Apply audio settings (called from settings view)
+function applyAudioSettings(settings) {
+  const newSettings = {
+    replayGain: settings.replayGain || 'no',
+    crossfade: settings.crossfade || 0,
+    maxBitDepth: settings.maxBitDepth || null,
+    maxSampleRate: settings.maxSampleRate || null
+  };
+
+  // Only log if settings actually changed
+  const hasChanged =
+    newSettings.replayGain !== currentAudioSettings.replayGain ||
+    newSettings.crossfade !== currentAudioSettings.crossfade ||
+    newSettings.maxBitDepth !== currentAudioSettings.maxBitDepth ||
+    newSettings.maxSampleRate !== currentAudioSettings.maxSampleRate;
+
+  currentAudioSettings = newSettings;
+
+  if (hasChanged) {
+    console.log('Applied audio settings:', currentAudioSettings);
+  }
+}
+
+// Get current audio settings for signal path display
+ipcMain.handle('get-audio-settings', () => {
+  return currentAudioSettings;
+});
+
+// Export for use in main.js
+module.exports = {
+  applyAudioSettings
+};
 

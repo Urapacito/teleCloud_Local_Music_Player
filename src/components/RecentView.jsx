@@ -3,16 +3,16 @@ import SongList from './SongList';
 
 const RecentView = ({ recentPlayed, currentFile, onPlay, onToggleFavorite, onAddPlaylist, favorites }) => {
   return (
-    <div style={{ display: 'flex', flex: 1, flexDirection: 'column', padding: '0 20px', paddingTop: '20px' }}>
+    <div style={{ display: 'flex', flex: 1, flexDirection: 'column', padding: '0 20px', paddingTop: '20px', height: '100%', overflow: 'hidden' }}>
       <h2 style={{ margin: '0 0 20px 0', fontSize: '24px' }}>Recently Played</h2>
       {recentPlayed.length === 0 ? (
         <p style={{ color: 'var(--text-muted)' }}>You haven't played any songs recently.</p>
       ) : (
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          <SongList 
-            musicFiles={recentPlayed} 
-            currentFile={currentFile} 
-            onPlay={onPlay} 
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          <SongList
+            musicFiles={recentPlayed}
+            currentFile={currentFile}
+            onPlay={onPlay}
             onToggleFavorite={onToggleFavorite}
             onAddPlaylist={onAddPlaylist}
             favorites={favorites}

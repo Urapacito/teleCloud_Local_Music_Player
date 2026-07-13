@@ -42,7 +42,7 @@ const TidalLogin = ({ onLoginSuccess }) => {
                 boxShadow: '0 10px 40px rgba(0,0,0,0.3)'
             }}>
                 <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-                    <svg viewBox="0 0 24 24" width="60" height="60" fill="var(--accent-red)" style={{ marginBottom: '20px' }}>
+                    <svg viewBox="0 0 24 24" width="60" height="60" fill="var(--accent-red)" style={{ marginBottom: '20px', transform: 'rotate(180deg)' }}>
                         <path d="M12.012 3.992L8.008 7.996 12.012 12l4.004-4.004L12.012 3.992zm0 8.016L8.008 16.012l4.004 4.004 4.004-4.004-4.004-4.004zm-8.016 0l-4.004 4.004L4.004 20l4.004-4.004-4.004-4.004zm16.032 0l-4.004 4.004L20.028 20l4.004-4.004-4.004-4.004z" />
                     </svg>
                     <h2 style={{ fontSize: '28px', fontWeight: 'bold', margin: '0 0 10px 0' }}>Connect Tidal</h2>

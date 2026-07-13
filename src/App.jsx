@@ -78,6 +78,20 @@ function App() {
   const [eqMinFreq, setEqMinFreq] = useState(20);
   const [eqMaxFreq, setEqMaxFreq] = useState(10000);
   const [eqMaxGain, setEqMaxGain] = useState(12);
+
+  // Keyboard shortcuts state
+  const [keyboardShortcuts, setKeyboardShortcuts] = useState({
+    playPause: 'Space',
+    next: 'ArrowRight',
+    previous: 'ArrowLeft',
+    volumeUp: 'ArrowUp',
+    volumeDown: 'ArrowDown',
+    seekForward: 'Ctrl+ArrowRight',
+    seekBackward: 'Ctrl+ArrowLeft',
+    toggleMute: 'M'
+  });
+  const [isMuted, setIsMuted] = useState(false);
+  const [previousVolume, setPreviousVolume] = useState(100);
   const [eqMaxQ, setEqMaxQ] = useState(2.0);
   const [eqNormalizeMode, setEqNormalizeMode] = useState('dB');
   const [eqNormalizeDbValue, setEqNormalizeDbValue] = useState(70);
@@ -103,6 +117,121 @@ function App() {
     };
     return () => { delete window.openEqSettings; };
   }, []);
+
+  // Load keyboard shortcuts from settings
+  useEffect(() => {
+    const loadShortcuts = async () => {
+      const settings = await window.ipcRenderer.invoke('load-store', 'settings');
+      if (settings && settings.keyboardShortcuts) {
+        setKeyboardShortcuts(settings.keyboardShortcuts);
+      }
+    };
+    loadShortcuts();
+  }, []);
+
+  // Global keyboard event listener (must be before any conditional returns)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts if user is typing in an input field
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+        return;
+      }
+
+      // Build the current key combination
+      const keys = [];
+      if (e.ctrlKey) keys.push('Ctrl');
+      if (e.shiftKey) keys.push('Shift');
+      if (e.altKey) keys.push('Alt');
+      let keyName = e.key === ' ' ? 'Space' : e.key;
+      // Normalize single letter keys to uppercase for case-insensitive comparison
+      if (keyName.length === 1 && /[a-zA-Z]/.test(keyName)) {
+        keyName = keyName.toUpperCase();
+      }
+      if (!['Control', 'Shift', 'Alt'].includes(e.key)) {
+        keys.push(keyName);
+      }
+      const combination = keys.join('+');
+
+      // Only process shortcuts if authenticated and have a current file for some actions
+      if (combination === keyboardShortcuts.playPause && currentFile) {
+        e.preventDefault();
+        const ipcRenderer = window.ipcRenderer;
+        if (isPlaying) {
+          ipcRenderer.invoke('pause-audio', true);
+        } else {
+          ipcRenderer.invoke('pause-audio', false);
+        }
+        setIsPlaying(prev => !prev);
+      } else if (combination === keyboardShortcuts.next && playQueue.length > 0) {
+        e.preventDefault();
+        let nextIdx = currentIndex + 1;
+        if (isShuffle) {
+          nextIdx = Math.floor(Math.random() * playQueue.length);
+        } else if (nextIdx >= playQueue.length) {
+          if (loopMode === 'all') nextIdx = 0;
+          else return;
+        }
+        // Can't call handleNext here, so inline the logic
+        const file = playQueue[nextIdx];
+        if (file) {
+          const ipcRenderer = window.ipcRenderer;
+          ipcRenderer.invoke('play-audio', { filePath: file.path, deviceId: selectedDevice });
+          setCurrentFile(file);
+          setCurrentIndex(nextIdx);
+          setIsPlaying(true);
+        }
+      } else if (combination === keyboardShortcuts.previous && playQueue.length > 0) {
+        e.preventDefault();
+        let prevIdx = currentIndex - 1;
+        if (prevIdx < 0) prevIdx = playQueue.length - 1;
+        const file = playQueue[prevIdx];
+        if (file) {
+          const ipcRenderer = window.ipcRenderer;
+          ipcRenderer.invoke('play-audio', { filePath: file.path, deviceId: selectedDevice });
+          setCurrentFile(file);
+          setCurrentIndex(prevIdx);
+          setIsPlaying(true);
+        }
+      } else if (combination === keyboardShortcuts.volumeUp && selectedDevice === '-1') {
+        e.preventDefault();
+        const newVol = Math.min(100, volume + 5);
+        setVolume(newVol);
+        window.ipcRenderer.invoke('set-volume', newVol);
+      } else if (combination === keyboardShortcuts.volumeDown && selectedDevice === '-1') {
+        e.preventDefault();
+        const newVol = Math.max(0, volume - 5);
+        setVolume(newVol);
+        window.ipcRenderer.invoke('set-volume', newVol);
+      } else if (combination === keyboardShortcuts.seekForward && currentFile) {
+        e.preventDefault();
+        const newTime = currentTime + 5;
+        setCurrentTime(newTime);
+        window.ipcRenderer.invoke('seek-audio', newTime);
+      } else if (combination === keyboardShortcuts.seekBackward && currentFile) {
+        e.preventDefault();
+        const newTime = Math.max(0, currentTime - 5);
+        setCurrentTime(newTime);
+        window.ipcRenderer.invoke('seek-audio', newTime);
+      } else if (combination === keyboardShortcuts.toggleMute && selectedDevice === '-1') {
+        e.preventDefault();
+        if (volume > 0) {
+          setPreviousVolume(volume);
+          setVolume(0);
+          window.ipcRenderer.invoke('set-volume', 0);
+          setIsMuted(true);
+        } else {
+          setVolume(previousVolume);
+          window.ipcRenderer.invoke('set-volume', previousVolume);
+          setIsMuted(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [keyboardShortcuts, volume, currentTime, currentFile, isPlaying, playQueue, currentIndex, isShuffle, loopMode, selectedDevice, isMuted, previousVolume]);
 
   const showToast = (msg, type = 'success') => {
     setToastMessage(msg);
@@ -361,6 +490,20 @@ function App() {
     window.ipcRenderer.invoke('set-volume', newVol); // Works for both via MPV
   };
 
+  const handleToggleMute = () => {
+    if (selectedDevice !== '-1') return; // Can't mute in exclusive mode
+    if (isMuted) {
+      setVolume(previousVolume);
+      window.ipcRenderer.invoke('set-volume', previousVolume);
+      setIsMuted(false);
+    } else {
+      setPreviousVolume(volume);
+      setVolume(0);
+      window.ipcRenderer.invoke('set-volume', 0);
+      setIsMuted(true);
+    }
+  };
+
   const handleToggleLoop = () => {
     if (loopMode === 'none') setLoopMode('all');
     else if (loopMode === 'all') setLoopMode('one');
@@ -583,6 +726,7 @@ function App() {
             onPlay={playMusic}
             onNavClick={setCurrentView}
             setSelectedAlbum={setSelectedAlbum}
+            theme={theme}
           />
         ) : currentView === 'favorites' ? (
           <FavoritesView favorites={favorites} currentFile={currentFile} onPlay={playMusic} onToggleFavorite={handleToggleFavorite} onAddPlaylist={handleAddPlaylist} onDeleteSong={handleDeleteSong} onDownloadSong={handleDownloadSong} />

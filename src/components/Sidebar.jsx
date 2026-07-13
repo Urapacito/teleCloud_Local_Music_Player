@@ -2,22 +2,90 @@ import React from 'react';
 
 const Sidebar = ({ isCollapsed, onToggle, currentView, onNavClick, theme }) => {
   return (
-    <div className={`ms_sidemenu_wrapper ${isCollapsed ? 'open_menu' : ''}`} style={{ width: isCollapsed ? '80px' : '250px', transition: 'width 0.3s, background-color 0.3s', backgroundColor: 'var(--bg-main)', backgroundImage: 'none' }}>
+    <div
+      className={`ms_sidemenu_wrapper ${isCollapsed ? 'open_menu' : ''}`}
+      style={{
+        width: isCollapsed ? '80px' : '250px',
+        transition: 'width 0.3s, background-color 0.3s',
+        backgroundColor: 'var(--bg-main)',
+        backgroundImage: 'none'
+      }}
+    >
+      {/* Heavy-duty CSS override block to smash through template defaults */}
+      <style dangerouslySetInnerHTML={{
+        __html: `
+        .ms_sidemenu_wrapper {
+          height: 100vh !important;
+          position: fixed !important;
+          top: 0 !important;
+          left: 0 !important;
+          bottom: 0 !important;
+          z-index: 99999 !important; /* Ensures it sits above main content panels */
+          overflow: visible !important; /* Prevents the toggle arrow from getting clipped */
+        }
+
+        .ms_sidemenu_inner {
+          min-height: 100vh !important;
+          height: auto !important;
+          display: flex !important;
+          flex-direction: column !important;
+          overflow-y: auto !important; /* Force vertical scrolling capability */
+          overflow-x: hidden !important;
+          scrollbar-width: none !important; /* Firefox */
+          -ms-overflow-style: none !important; /* IE/Edge */
+        }
+        
+        /* Hide scrollbars completely across WebKit engines */
+        .ms_sidemenu_inner::-webkit-scrollbar {
+          display: none !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
+
+        .settings-link { color: var(--text-muted); transition: all 0.2s; }
+        .settings-link:hover, .settings-link.active { color: var(--accent-red); }
+        .settings-link .nav_text { transition: color 0.2s; }
+        .settings-link:hover .nav_text, .settings-link.active .nav_text { color: var(--accent-red); }
+      `}} />
+
+      {/* Persistent Toggle Handle — Placed outside the inner scroll wrapper so it stays static */}
       <div
         onClick={onToggle}
-        style={{ cursor: 'pointer', position: 'absolute', right: '-15px', top: '50%', background: 'var(--bg-secondary)', borderRadius: '50%', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, transform: 'translateY(-50%)', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}
+        style={{
+          cursor: 'pointer',
+          position: 'absolute',
+          right: '-15px',
+          top: '50%',
+          background: 'var(--bg-secondary)',
+          borderRadius: '50%',
+          width: '30px',
+          height: '30px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 100000,
+          transform: 'translateY(-50%)',
+          boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
+        }}
       >
         <span style={{ transform: isCollapsed ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s', color: 'var(--text-main)', fontSize: '18px', fontWeight: 'bold' }}>‹</span>
       </div>
-      <div className="ms_sidemenu_inner" style={{ overflow: 'hidden' }}>
+
+      {/* Scroll-Activated Inner Container Layout */}
+      <div className="ms_sidemenu_inner" style={{ paddingBottom: '250px' }}>
         <div className="ms_logo_inner">
           <div className="ms_logo" style={{ display: isCollapsed ? 'none' : 'block' }}>
-            <a href="#" onClick={(e) => { e.preventDefault(); onNavClick('home'); }}><img src="/assets/images/logo.png" alt="logo" className="img-fluid" style={{ filter: theme === 'light' ? 'invert(1) hue-rotate(180deg)' : 'none', transition: 'filter 0.3s' }} /></a>
+            <a href="#" onClick={(e) => { e.preventDefault(); onNavClick('home'); }}>
+              <img src="/assets/images/logo.png" alt="logo" className="img-fluid" style={{ filter: theme === 'light' ? 'invert(1) hue-rotate(180deg)' : 'none', transition: 'filter 0.3s' }} />
+            </a>
           </div>
           <div className="ms_logo_mini" style={{ display: isCollapsed ? 'block' : 'none' }}>
-            <a href="#" onClick={(e) => { e.preventDefault(); onNavClick('home'); }}><img src="/assets/images/mini_logo.png" alt="mini_logo" className="img-fluid" style={{ filter: theme === 'light' ? 'invert(1) hue-rotate(180deg)' : 'none', transition: 'filter 0.3s' }} /></a>
+            <a href="#" onClick={(e) => { e.preventDefault(); onNavClick('home'); }}>
+              <img src="/assets/images/mini_logo.png" alt="mini_logo" className="img-fluid" style={{ filter: theme === 'light' ? 'invert(1) hue-rotate(180deg)' : 'none', transition: 'filter 0.3s' }} />
+            </a>
           </div>
         </div>
+
         <div className="ms_nav_wrapper">
           <h4 className="nav_heading" style={{ display: isCollapsed ? 'none' : 'block' }}>Browse Music</h4>
           <ul>
@@ -30,7 +98,7 @@ const Sidebar = ({ isCollapsed, onToggle, currentView, onNavClick, theme }) => {
             <li>
               <a href="#" className={currentView === 'tidal' ? 'active' : ''} onClick={(e) => { e.preventDefault(); onNavClick('tidal'); }} title="Tidal">
                 <span className="nav_icon">
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '22px', height: '22px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '22px', height: '22px', transform: 'rotate(180deg)' }}>
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                       <path d="M12.012 3.992L8.008 7.996 12.012 12l4.004-4.004L12.012 3.992zm0 8.016L8.008 16.012l4.004 4.004 4.004-4.004-4.004-4.004zm-8.016 0l-4.004 4.004L4.004 20l4.004-4.004-4.004-4.004zm16.032 0l-4.004 4.004L20.028 20l4.004-4.004-4.004-4.004z" />
                     </svg>
@@ -53,12 +121,6 @@ const Sidebar = ({ isCollapsed, onToggle, currentView, onNavClick, theme }) => {
           <h4 className="nav_heading" style={{ display: isCollapsed ? 'none' : 'block', marginTop: '20px' }}>System</h4>
           <ul>
             <li>
-              <style>{`
-                .settings-link { color: var(--text-muted); transition: all 0.2s; }
-                .settings-link:hover, .settings-link.active { color: var(--accent-red); }
-                .settings-link .nav_text { transition: color 0.2s; }
-                .settings-link:hover .nav_text, .settings-link.active .nav_text { color: var(--accent-red); }
-              `}</style>
               <a href="#" className={`settings-link ${currentView === 'settings' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); onNavClick('settings'); }} title="Settings">
                 <span className="nav_icon">
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '22px', height: '22px' }}>

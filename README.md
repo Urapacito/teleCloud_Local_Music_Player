@@ -4,10 +4,53 @@ Telecloud is a feature-rich, Electron-based desktop application designed for sea
 
 ## Project Overview
 
-The core goal of Telecloud is to provide a unified listening experience by combining multiple audio sources:
-- **Tidal Integration**: Native support for browsing and streaming from Tidal, including personalized playlists, albums, and artists.
-- **Advanced Media Playback**: Utilizes `mpv` and `ffmpeg` under the hood to ensure robust audio decoding, enabling advanced features like EQ settings, audio spectrum visualization, and signal path monitoring.
-- **Telegram Connectivity**: Integrates with Telegram to stream or manage media directly from your chats.
+Telecloud is an audiophile-grade desktop music player that combines high-fidelity playback with modern streaming integration. Built on Electron and React, it leverages MPV for bit-perfect audio output while providing a sleek, feature-rich user interface.
+
+## Features
+
+### Core Playback
+- **MPV Integration** - Professional-grade audio engine with bit-perfect output
+- **Local File Playback** - Supports FLAC, ALAC, WAV, AIFF, APE, MP3, AAC, Opus, Vorbis, DSD (DSF/DFF)
+- **Telegram Music Bot** - Stream music directly from Telegram chats and channels (not done core yet, will update after done others)
+- **Queue Management** - Full queue control with add, remove, and reorder capabilities
+- **Playback Controls** - Play, pause, seek, volume control with IPC communication
+
+### Audio Quality
+- **Bit-Perfect Playback** - WASAPI support for unmodified audio output
+- **High-Resolution Audio** - Native support for 24/96, 24/192, 32/384, DSD64/128/256
+- **31-Band Parametric EQ** - Professional-grade equalizer with customizable frequencies
+- **Auto-EQ (Room Correction)** - Automated EQ calculation with target curve matching
+- **Real-Time Spectrum Analyzer** - FFT-based frequency analysis with visualization
+- **Signal Path Visualization** - Transparent display of audio processing chain
+- **Automatic Sample Rate Switching** - Seamless adaptation to source material
+- **Gapless Playback** - Uninterrupted transitions between tracks
+- **ReplayGain Support** - Track and album normalization modes
+- **Crossfade** - Configurable crossfade duration between tracks
+- **Audio Device Selection** - Support for multiple output devices with WASAPI exclusive mode
+- **Sample Rate Limiting** - Cap bit depth and sample rate for device compatibility
+
+### User Interface
+- **Dark/Light Theme** - Seamless theme switching with CSS variables
+- **Modern Navigation** - Intuitive sidebar with view management
+- **Advanced Search** - Filter across local library and Telegram sources
+- **Playlist Management** - Create, edit, and organize playlists
+- **Album/Artist Views** - Dedicated browsing interfaces
+- **Lyrics Display** - Synchronized lyrics when available
+- **Cover Art** - Embedded artwork extraction and display
+- **Keyboard Shortcuts** - Fully customizable shortcuts for all playback functions
+- **Custom Dropdowns** - Theme-adaptive UI components
+
+### Streaming Integration
+- **Tidal Browse** - OAuth integration for browsing Tidal's catalog
+- **Tidal Metadata** - Access to playlists, albums, tracks, and artist information
+- **Tidal Search** - Full-text search across Tidal's library
+
+### Technical Features
+- **Electron + React** - Native desktop application with modern web technologies
+- **Vite Build System** - Fast development with hot module replacement
+- **IPC Communication** - Secure main/renderer process communication
+- **Settings Persistence** - All configurations saved locally
+- **Error Handling** - Comprehensive logging and error recovery
 
 ## Project Structure
 

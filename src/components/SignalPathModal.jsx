@@ -1,6 +1,25 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 const SignalPathModal = ({ currentFile, selectedDevice, devices, eqEnabled, setEqEnabled, onClose }) => {
+  const [audioSettings, setAudioSettings] = useState({
+    replayGain: 'no',
+    crossfade: 0,
+    maxBitDepth: null,
+    maxSampleRate: null
+  });
+
+  useEffect(() => {
+    const fetchAudioSettings = async () => {
+      try {
+        const settings = await window.ipcRenderer.invoke('get-audio-settings');
+        setAudioSettings(settings);
+      } catch (e) {
+        console.error('Error fetching audio settings:', e);
+      }
+    };
+    fetchAudioSettings();
+  }, []);
+
   const deviceName = selectedDevice === '-1' ? 'System Default' : (devices.find(d => d.id === selectedDevice)?.name || 'Unknown Device');
 
   const isTidal = currentFile?.id?.startsWith('tidal:') || currentFile?.source === 'tidal' || currentFile?.path?.startsWith('tidal://');
@@ -9,6 +28,20 @@ const SignalPathModal = ({ currentFile, selectedDevice, devices, eqEnabled, setE
   const sourceName = isTidal ? "Tidal" : "Source";
 
   const isExclusive = selectedDevice !== '-1';
+  const replayGainEnabled = audioSettings.replayGain && audioSettings.replayGain !== 'no';
+  const crossfadeEnabled = audioSettings.crossfade > 0;
+  const maxSamplingEnabled = audioSettings.maxBitDepth || audioSettings.maxSampleRate;
+
+  // Determine signal path quality label
+  const hasAnyProcessing = eqEnabled || replayGainEnabled || crossfadeEnabled || maxSamplingEnabled;
+  let qualityLabel;
+  if (eqEnabled) {
+    qualityLabel = 'Enhanced';
+  } else if (!hasAnyProcessing && isExclusive) {
+    qualityLabel = 'Lossless';
+  } else {
+    qualityLabel = 'High Quality';
+  }
 
   return (
     <div style={{
@@ -28,7 +61,7 @@ const SignalPathModal = ({ currentFile, selectedDevice, devices, eqEnabled, setE
           <h3 style={{ margin: 0, fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             Signal Path
             <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-              {eqEnabled ? 'Enhanced' : (isExclusive ? 'Lossless' : 'High Quality')}
+              {qualityLabel}
             </span>
           </h3>
         </div>
@@ -81,6 +114,45 @@ const SignalPathModal = ({ currentFile, selectedDevice, devices, eqEnabled, setE
             Configure
           </button>
         </div>
+
+        {/* ReplayGain Node */}
+        {replayGainEnabled && (
+          <div style={{ display: 'flex', gap: '15px', position: 'relative', zIndex: 1, alignItems: 'center' }}>
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent-red)', margin: '10px' }} />
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>ReplayGain</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {audioSettings.replayGain === 'track' ? 'Track-based normalization' : 'Album-based normalization'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Crossfade Node */}
+        {crossfadeEnabled && (
+          <div style={{ display: 'flex', gap: '15px', position: 'relative', zIndex: 1, alignItems: 'center' }}>
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent-red)', margin: '10px' }} />
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>Crossfade</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {audioSettings.crossfade}s smooth transition
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Max Sampling Node */}
+        {maxSamplingEnabled && (
+          <div style={{ display: 'flex', gap: '15px', position: 'relative', zIndex: 1, alignItems: 'center' }}>
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent-red)', margin: '10px' }} />
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>Sample Rate Limiter</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                Max {audioSettings.maxBitDepth || 24}-bit / {audioSettings.maxSampleRate || 192}kHz
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Volume / Exclusive Mode */}
         {isExclusive ? (

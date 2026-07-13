@@ -236,6 +236,17 @@ ipcMain.handle('read-local-file', async (event, filePath) => {
   }
 });
 
+ipcMain.handle('apply-audio-settings', async (event, settings) => {
+  try {
+    const { applyAudioSettings } = require('./player');
+    await applyAudioSettings(settings);
+    return { success: true };
+  } catch (err) {
+    console.error('Error applying audio settings:', err);
+    return { success: false, error: err.message };
+  }
+});
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
