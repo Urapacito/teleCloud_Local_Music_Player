@@ -109,7 +109,16 @@ const CustomDropdown = ({ value, onChange, options, label }) => {
   );
 };
 
-const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setAppDisabledDevices }) => {
+const SettingsView = ({
+  currentView,
+  theme,
+  setTheme,
+  setDisabledDevices: setAppDisabledDevices,
+  musicFolderList,
+  setMusicFolderList,
+  onRefreshFolder,
+  setMusicFiles
+}) => {
   const [activeTab, setActiveTab] = useState('Downloads');
   const [downloadFolder, setDownloadFolder] = useState('');
   const [audioDevices, setAudioDevices] = useState([]);
@@ -320,7 +329,43 @@ const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setApp
     }
   };
 
-  const tabs = ['General', 'Audio', 'Advanced Audio', 'Keyboard', 'Downloads', 'Network', 'About'];
+  const handleAddFolder = async () => {
+    const ipcRenderer = window.ipcRenderer;
+    const folderPath = await ipcRenderer.invoke('select-music-folder');
+    if (folderPath) {
+      if (musicFolderList.includes(folderPath)) return;
+      const newList = [...musicFolderList, folderPath];
+      setMusicFolderList(newList);
+      const settings = await ipcRenderer.invoke('load-store', 'settings') || {};
+      settings.musicFolderList = newList;
+      await ipcRenderer.invoke('save-store', 'settings', settings);
+
+      // Trigger scan after adding
+      const files = await ipcRenderer.invoke('scan-local-music-cached', newList);
+      setMusicFiles(files);
+      await ipcRenderer.invoke('save-library', files);
+    }
+  };
+
+  const handleRemoveFolder = async (pathToRemove) => {
+    const newList = musicFolderList.filter(p => p !== pathToRemove);
+    setMusicFolderList(newList);
+    const settings = await window.ipcRenderer.invoke('load-store', 'settings') || {};
+    settings.musicFolderList = newList;
+    await window.ipcRenderer.invoke('save-store', 'settings', settings);
+
+    // After removing, we should probably re-scan to update the library
+    if (newList.length > 0) {
+      const files = await window.ipcRenderer.invoke('scan-local-music-cached', newList);
+      setMusicFiles(files);
+      await window.ipcRenderer.invoke('save-library', files);
+    } else {
+      setMusicFiles([]);
+      await window.ipcRenderer.invoke('save-library', []);
+    }
+  };
+
+  const tabs = ['General', 'Files', 'Audio', 'Advanced Audio', 'Keyboard', 'Downloads', 'Network', 'About'];
 
   return (
     <div style={{ display: 'flex', height: '100%', color: 'var(--text-main)', padding: '30px' }}>
@@ -355,6 +400,182 @@ const SettingsView = ({ currentView, theme, setTheme, setDisabledDevices: setApp
 
       {/* Main Content */}
       <div style={{ flex: 1, paddingLeft: '40px', overflowY: 'auto' }}>
+
+        {activeTab === 'Files' && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+              <h3 style={{ fontSize: '20px', margin: 0, fontWeight: 'bold' }}>File Management</h3>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={() => onRefreshFolder(true)}
+                  style={{
+                    background: 'var(--bg-hover)',
+                    color: 'var(--text-main)',
+                    border: 'none',
+                    padding: '10px 20px',
+                    borderRadius: '20px',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <path d="m21 21-4.35-4.35"></path>
+                  </svg>
+                  Scan List
+                </button>
+                <button
+                  onClick={() => onRefreshFolder(false)}
+                  style={{
+                    background: 'var(--bg-hover)',
+                    color: 'var(--text-main)',
+                    border: 'none',
+                    padding: '10px 20px',
+                    borderRadius: '20px',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                  </svg>
+                  Refresh List
+                </button>
+                <button
+                  onClick={handleAddFolder}
+                  style={{
+                    background: 'var(--accent-red)',
+                    color: 'white',
+                    border: 'none',
+                    padding: '10px 20px',
+                    borderRadius: '20px',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  Add Folder
+                </button>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--bg-tertiary)', overflow: 'hidden' }}>
+              {musicFolderList.length === 0 ? (
+                <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  No music folders added yet.
+                </div>
+              ) : (
+                musicFolderList.map((folder, idx) => (
+                  <div
+                    key={folder}
+                    style={{
+                      padding: '20px 25px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      borderBottom: idx < musicFolderList.length - 1 ? '1px solid var(--bg-tertiary)' : 'none'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '15px', overflow: 'hidden' }}>
+                      <div style={{ minWidth: '40px', height: '40px', background: 'var(--bg-main)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="var(--text-muted)"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z" /></svg>
+                      </div>
+                      <div style={{ overflow: 'hidden' }}>
+                        <div style={{ fontSize: '14px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{folder}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px', marginLeft: '20px' }}>
+                      <button
+                        onClick={() => {
+                          // Trigger full scan for this folder
+                          onRefreshFolder(true);
+                        }}
+                        style={{
+                          background: 'var(--bg-hover)',
+                          border: '1px solid var(--bg-tertiary)',
+                          color: 'var(--text-main)',
+                          padding: '6px 12px',
+                          borderRadius: '15px',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="11" cy="11" r="8"></circle>
+                          <path d="m21 21-4.35-4.35"></path>
+                        </svg>
+                        Scan
+                      </button>
+                      <button
+                        onClick={() => {
+                          // Trigger fast refresh for this folder
+                          onRefreshFolder(false);
+                        }}
+                        style={{
+                          background: 'var(--bg-hover)',
+                          border: '1px solid var(--bg-tertiary)',
+                          color: 'var(--text-main)',
+                          padding: '6px 12px',
+                          borderRadius: '15px',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="23 4 23 10 17 10"></polyline>
+                          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                        Refresh
+                      </button>
+                      <button
+                        onClick={() => handleRemoveFolder(folder)}
+                        style={{
+                          background: 'transparent',
+                          border: '1px solid var(--accent-red)',
+                          color: 'var(--accent-red)',
+                          padding: '6px 12px',
+                          borderRadius: '15px',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
 
         {activeTab === 'Downloads' && (
           <div>

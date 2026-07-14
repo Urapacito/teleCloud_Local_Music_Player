@@ -16,6 +16,7 @@
     "@tidal-music/player": "^0.18.3",
     "@tidal-music/player-web-components": "^0.3.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "better-sqlite3": "^12.11.1",
     "concurrently": "^9.2.3",
     "cross-env": "^10.1.0",
     "dashjs": "^5.2.0",
@@ -37,5 +38,9 @@
     "tidalapi-ts": "^2.1.2",
     "vite": "^6.4.3",
     "wait-on": "^9.0.10"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "electron-rebuild": "^3.2.9"
   }
 }

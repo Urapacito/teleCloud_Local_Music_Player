@@ -25,6 +25,8 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const handleTrackEndedRef = useRef(null); // Stable ref to handleTrackEnded to avoid stale closures
   const tidalPlayerEventsRef = useRef(null);
+  const toastTimeoutRef = useRef(null); // Ref to store toast timeout ID
+  const isScanningRef = useRef(false); // Ref to prevent concurrent scans
   const [musicFiles, setMusicFiles] = useState([]);
   const [playQueue, setPlayQueue] = useState([]);
   const [currentFile, setCurrentFile] = useState(null);
@@ -52,6 +54,7 @@ function App() {
   const [disabledDevices, setDisabledDevices] = useState([]);
 
   const [currentFolderPath, setCurrentFolderPath] = useState(localStorage.getItem('musicFolderPath') || '');
+  const [musicFolderList, setMusicFolderList] = useState([]);
 
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState('success');
@@ -98,6 +101,9 @@ function App() {
   const [eqNormalizeHzValue, setEqNormalizeHzValue] = useState(500);
   const [eqSmoothFactor, setEqSmoothFactor] = useState(5);
   const [eqPreamp, setEqPreamp] = useState(0);
+
+  // Scan progress state
+  const [scanProgress, setScanProgress] = useState(null); // { type: 'scanning'|'refreshing', status: 'inProgress'|'done', message: string }
 
   // Set EQ in IPC whenever it changes (with debounce to prevent mpv lag)
   useEffect(() => {
@@ -234,9 +240,20 @@ function App() {
   }, [keyboardShortcuts, volume, currentTime, currentFile, isPlaying, playQueue, currentIndex, isShuffle, loopMode, selectedDevice, isMuted, previousVolume]);
 
   const showToast = (msg, type = 'success') => {
+    // Clear any existing toast timeout
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+
     setToastMessage(msg);
     setToastType(type);
-    setTimeout(() => { setToastMessage(''); setToastType('success'); }, 3000);
+
+    // Set new timeout and store its ID
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage('');
+      setToastType('success');
+      toastTimeoutRef.current = null;
+    }, 3000);
   };
 
   useEffect(() => {
@@ -280,11 +297,18 @@ function App() {
         }
       });
       ipcRenderer.invoke('load-store', 'favorites').then(data => setFavorites(data || []));
-      ipcRenderer.invoke('load-store', 'recent').then(data => setRecentPlayed(data || []));
+      ipcRenderer.invoke('load-store', 'recent').then(data => {
+        // Filter recent played to only include files that still exist in library
+        const recent = data || [];
+        setRecentPlayed(recent);
+      });
       ipcRenderer.invoke('load-store', 'playlists').then(data => setPlaylists(data || []));
       ipcRenderer.invoke('load-store', 'settings').then(settings => {
         if (settings && settings.disabledDevices) {
           setDisabledDevices(settings.disabledDevices);
+        }
+        if (settings && settings.musicFolderList) {
+          setMusicFolderList(settings.musicFolderList);
         }
       });
 
@@ -292,28 +316,176 @@ function App() {
         handleTrackEndedRef.current?.();
       });
 
+      // Listen for scan progress events
+      ipcRenderer.on('scan-progress', (event, progress) => {
+        if (progress.stage === 'indexing') {
+          setScanProgress({
+            type: 'scanning',
+            status: 'inProgress',
+            message: progress.message || 'Indexing files...'
+          });
+        } else if (progress.stage === 'parsing') {
+          setScanProgress({
+            type: 'scanning',
+            status: 'inProgress',
+            message: progress.message || `Parsing metadata (${progress.current}/${progress.total})...`
+          });
+        } else if (progress.stage === 'complete') {
+          setScanProgress({
+            type: 'scanning',
+            status: 'done',
+            message: progress.message || 'Scan complete!'
+          });
+          setTimeout(() => setScanProgress(null), 3000);
+        }
+      });
+
+      // Listen for incremental metadata fetch progress
+      const metadataUpdates = new Map();
+      let saveTimeout = null;
+
+      ipcRenderer.on('metadata-fetch-progress', (event, data) => {
+        const { file, current, total } = data;
+
+        // Update UI immediately
+        setMusicFiles(prevFiles => {
+          return prevFiles.map(f => {
+            if (f.path === file.path) {
+              return {
+                ...f,
+                cover: file.cover || f.cover,
+                metadata: {
+                  ...f.metadata,
+                  lyrics: file.lyrics || f.metadata?.lyrics || ''
+                }
+              };
+            }
+            return f;
+          });
+        });
+
+        // Store update in memory
+        metadataUpdates.set(file.path, file);
+
+        // Debounce disk writes - only save every 2 seconds or when complete
+        if (saveTimeout) clearTimeout(saveTimeout);
+
+        if (current === total) {
+          // Last file - save immediately
+          saveBatchedMetadata();
+        } else {
+          // Batch save after 2 seconds of inactivity
+          saveTimeout = setTimeout(saveBatchedMetadata, 2000);
+        }
+      });
+
+      async function saveBatchedMetadata() {
+        if (metadataUpdates.size === 0) return;
+
+        const lib = await ipcRenderer.invoke('load-library');
+        const updatedLib = lib.map(libFile => {
+          const update = metadataUpdates.get(libFile.path);
+          if (update) {
+            return {
+              ...libFile,
+              cover: update.cover || libFile.cover,
+              metadata: {
+                ...libFile.metadata,
+                lyrics: update.lyrics || libFile.metadata?.lyrics || ''
+              }
+            };
+          }
+          return libFile;
+        });
+
+        await ipcRenderer.invoke('save-library', updatedLib);
+        metadataUpdates.clear();
+      }
+
       return () => {
         ipcRenderer.removeAllListeners('track-ended');
         ipcRenderer.removeAllListeners('time-pos');
+        ipcRenderer.removeAllListeners('scan-progress');
+        ipcRenderer.removeAllListeners('metadata-fetch-progress');
       };
     }
   }, [isAuthenticated, currentFile, musicFiles, loopMode, isShuffle]);
+
+  // Filter recentPlayed to only include files that exist in current library
+  useEffect(() => {
+    if (isAuthenticated && musicFiles.length > 0 && recentPlayed.length > 0) {
+      const validPaths = new Set(musicFiles.map(f => f.path));
+      const filteredRecent = recentPlayed.filter(f => f && f.path && validPaths.has(f.path));
+
+      if (filteredRecent.length !== recentPlayed.length) {
+        // Clean up stale/invalid paths from recentPlayed
+        setRecentPlayed(filteredRecent);
+        window.ipcRenderer.invoke('save-store', 'recent', filteredRecent);
+        console.log(`[Recent] Cleaned up ${recentPlayed.length - filteredRecent.length} invalid file(s)`);
+      }
+    }
+  }, [musicFiles.length, recentPlayed.length, isAuthenticated]); // Run when either changes
+
+  // Auto-refresh on app startup (silent background check for new/deleted songs)
+  useEffect(() => {
+    if (isAuthenticated && musicFolderList.length > 0 && musicFiles.length > 0) {
+      // Delay to let the UI load first
+      const timer = setTimeout(async () => {
+        try {
+          const ipcRenderer = window.ipcRenderer;
+          const oldCount = musicFiles.length;
+
+          // Silent refresh - check for new/deleted files
+          const files = await ipcRenderer.invoke('refresh-library', musicFolderList);
+
+          if (files && files.length !== oldCount) {
+            const newCount = files.length;
+            setMusicFiles(files);
+            await ipcRenderer.invoke('save-library', files);
+
+            // Show a subtle notification only if there were changes
+            if (newCount > oldCount) {
+              showToast(`Auto-refresh: Added ${newCount - oldCount} new ${(newCount - oldCount) === 1 ? 'song' : 'songs'}!`);
+            } else if (newCount < oldCount) {
+              const removed = oldCount - newCount;
+              showToast(`Auto-refresh: Removed ${removed} missing ${removed === 1 ? 'file' : 'files'}.`);
+            }
+          }
+        } catch (err) {
+          console.error('Auto-refresh error:', err);
+        }
+      }, 2000); // 2 second delay after app loads
+
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthenticated, musicFolderList.length]); // Only run once when authenticated and folders are loaded
 
   const handleAddFolder = async () => {
     try {
       const ipcRenderer = window.ipcRenderer;
       const folderPath = await ipcRenderer.invoke('select-music-folder');
       if (folderPath) {
-        showToast("Indexing songs from folder...");
-        localStorage.setItem('musicFolderPath', folderPath);
-        setCurrentFolderPath(folderPath);
-        const files = await ipcRenderer.invoke('scan-local-music', folderPath);
+        if (musicFolderList.includes(folderPath)) {
+          showToast("Folder already in list.");
+          return;
+        }
+
+        const newList = [...musicFolderList, folderPath];
+        setMusicFolderList(newList);
+
+        // Save to settings
+        const settings = await ipcRenderer.invoke('load-store', 'settings') || {};
+        settings.musicFolderList = newList;
+        await ipcRenderer.invoke('save-store', 'settings', settings);
+
+        showToast("Indexing songs from folders...");
+        const files = await ipcRenderer.invoke('scan-local-music-cached', newList);
         if (files && files.length > 0) {
           setMusicFiles(files);
           await ipcRenderer.invoke('save-library', files);
           showToast(`Done indexing! Found ${files.length} songs.`);
         } else {
-          showToast("No music files found in folder.");
+          showToast("No music files found in folders.");
         }
       }
     } catch (err) {
@@ -322,33 +494,90 @@ function App() {
     }
   };
 
-  const handleRefreshFolder = async () => {
-    let folder = currentFolderPath;
-    if (!folder && musicFiles.length > 0) {
-      const ipcRenderer = window.ipcRenderer;
-      folder = await ipcRenderer.invoke('get-dirname', musicFiles[0].path);
-      setCurrentFolderPath(folder);
-      localStorage.setItem('musicFolderPath', folder);
+  const handleRefreshFolder = async (isFullScan = false) => {
+    // Prevent concurrent operations
+    if (isScanningRef.current) {
+      showToast("Operation already in progress, please wait...", 'info');
+      return;
     }
 
-    if (folder) {
+    if (musicFolderList.length > 0) {
       try {
-        showToast("Refreshing folder...");
+        isScanningRef.current = true;
+        const oldCount = musicFiles.length; // Capture count BEFORE starting
+
         const ipcRenderer = window.ipcRenderer;
-        const files = await ipcRenderer.invoke('scan-local-music', folder);
+        let files;
+
+        if (isFullScan) {
+          // FULL SCAN: Directory traversal + metadata parsing with database caching
+          setScanProgress({ type: 'scanning', status: 'inProgress', message: 'Scanning folders...' });
+          files = await ipcRenderer.invoke('scan-local-music-cached', musicFolderList);
+        } else {
+          // FAST REFRESH: Check for new/deleted files (fast)
+          setScanProgress({ type: 'refreshing', status: 'inProgress', message: 'Refreshing library...' });
+          files = await ipcRenderer.invoke('refresh-library', musicFolderList);
+        }
+
         if (files && files.length > 0) {
+          const newCount = files.length;
+
           setMusicFiles(files);
           await ipcRenderer.invoke('save-library', files);
-          showToast("Done refreshing!");
+
+          let resultMessage = '';
+          if (newCount === oldCount) {
+            resultMessage = isFullScan ? "No changes detected." : "All files still present.";
+          } else if (newCount > oldCount) {
+            resultMessage = `Added ${newCount - oldCount} new ${(newCount - oldCount) === 1 ? 'song' : 'songs'}!`;
+          } else {
+            const removed = oldCount - newCount;
+            resultMessage = `Removed ${removed} missing ${removed === 1 ? 'file' : 'files'}. Library now has ${newCount} ${newCount === 1 ? 'song' : 'songs'}.`;
+          }
+
+          // Show completion popup
+          setScanProgress({
+            type: isFullScan ? 'scanning' : 'refreshing',
+            status: 'done',
+            message: `${isFullScan ? 'Scan' : 'Refresh'} complete. ${resultMessage}`
+          });
+
+          // Hide after 3 seconds
+          setTimeout(() => setScanProgress(null), 3000);
+
+          // Background metadata fetching for refresh operation (covers + lyrics) - incremental updates
+          if (!isFullScan) {
+            // Find files that need metadata (no cover or no lyrics)
+            const filesNeedingMetadata = files.filter(f => !f.cover || !f.metadata?.lyrics).map(f => f.path);
+
+            if (filesNeedingMetadata.length > 0) {
+              // Fetch metadata in background (don't await - let it run async)
+              ipcRenderer.invoke('fetch-metadata-background', filesNeedingMetadata).catch(err => {
+                console.error('Background metadata fetch error:', err);
+              });
+            }
+          }
         } else {
-          showToast("Refresh complete, but no files found.");
+          setScanProgress({
+            type: isFullScan ? 'scanning' : 'refreshing',
+            status: 'done',
+            message: `${isFullScan ? 'Scan' : 'Refresh'} complete, but no files found.`
+          });
+          setTimeout(() => setScanProgress(null), 3000);
         }
       } catch (err) {
         console.error(err);
-        showToast("Error refreshing folder.");
+        setScanProgress({
+          type: isFullScan ? 'scanning' : 'refreshing',
+          status: 'done',
+          message: 'Error during operation.'
+        });
+        setTimeout(() => setScanProgress(null), 3000);
+      } finally {
+        isScanningRef.current = false; // Always reset the flag
       }
     } else {
-      showToast("No folder added yet.");
+      showToast("No folders added yet.");
     }
   };
 
@@ -695,7 +924,16 @@ function App() {
             tidalSession={tidalSession}
           />
         ) : currentView === 'settings' ? (
-          <SettingsView currentView={currentView} theme={theme} setTheme={setTheme} setDisabledDevices={setDisabledDevices} />
+          <SettingsView
+            currentView={currentView}
+            theme={theme}
+            setTheme={setTheme}
+            setDisabledDevices={setDisabledDevices}
+            musicFolderList={musicFolderList}
+            setMusicFolderList={setMusicFolderList}
+            onRefreshFolder={handleRefreshFolder}
+            setMusicFiles={setMusicFiles}
+          />
         ) : currentView === 'eq-settings' ? (
           <EqSettingsView
             onBack={() => setCurrentView('settings')}
@@ -877,8 +1115,53 @@ function App() {
         <SpectrumModal file={spectrumFile} onClose={() => setSpectrumFile(null)} />
       )}
 
+      {/* Scan Progress Popup */}
+      {scanProgress && (
+        <div style={{
+          position: 'fixed',
+          bottom: '120px',
+          right: '30px',
+          background: 'var(--bg-secondary)',
+          padding: '15px 20px',
+          borderRadius: '12px',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+          border: '1px solid var(--bg-hover)',
+          width: '300px',
+          zIndex: 10000,
+          animation: 'slideIn 0.3s ease'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {scanProgress.status === 'inProgress' && (
+              <div style={{
+                width: '20px',
+                height: '20px',
+                border: '3px solid var(--bg-tertiary)',
+                borderTop: '3px solid var(--accent-red)',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite'
+              }}></div>
+            )}
+            {scanProgress.status === 'done' && (
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent-red)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            )}
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '4px' }}>
+                {scanProgress.status === 'inProgress'
+                  ? (scanProgress.type === 'scanning' ? 'Scanning...' : 'Refreshing...')
+                  : (scanProgress.type === 'scanning' ? 'Scan Complete' : 'Refresh Complete')}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                {scanProgress.message}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Download Toasts Container */}
-      <div style={{ position: 'fixed', bottom: '120px', right: '30px', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ position: 'fixed', bottom: scanProgress ? '250px' : '120px', right: '30px', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '10px', transition: 'bottom 0.3s ease' }}>
         {downloadToasts.map(toast => (
           <div key={toast.id} style={{ background: 'var(--bg-secondary)', padding: '15px 20px', borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', border: '1px solid var(--bg-hover)', width: '300px', animation: 'slideIn 0.3s ease' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '13px' }}>
@@ -900,6 +1183,10 @@ function App() {
         @keyframes slideIn {
           from { transform: translateX(100%); opacity: 0; }
           to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
         }
       `}</style>
     </div>

@@ -314,12 +314,13 @@ const PlayerBar = ({
         {/* Current Track Info - Left Column */}
         <div className="player-left" style={{ width: isExpanded ? '550px' : '300px' }}>
           <img
-            src={currentFile?.cover || defaultCover}
+            src={currentFile?.path ? `media://${encodeURIComponent(currentFile.path)}` : (currentFile?.cover || defaultCover)}
             alt="cover"
+            loading="lazy"
             style={{ width: '60px', height: '60px', borderRadius: '4px', marginRight: '15px', objectFit: 'cover', background: 'var(--text-main)', flexShrink: 0 }}
           />
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-            <h4 style={{ margin: '0 0 5px 0', fontSize: '16px', fontWeight: 'bold', color: 'white', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <h4 style={{ margin: '5px 0 5px 0', fontSize: '16px', fontWeight: 'bold', color: 'white', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {currentFile?.metadata?.title || currentFile?.name || 'No song'}
             </h4>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>

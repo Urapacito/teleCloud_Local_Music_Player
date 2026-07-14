@@ -32,12 +32,12 @@ const AlbumsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPl
       let rawAlbum = file.metadata?.album || 'Unknown Album';
 
       if (!albumMap[rawAlbum]) {
-        albumMap[rawAlbum] = { name: rawAlbum, songs: [], cover: file.cover };
+        albumMap[rawAlbum] = { name: rawAlbum, songs: [], cover: file.path ? `media://${encodeURIComponent(file.path)}` : file.cover };
       }
       albumMap[rawAlbum].songs.push(file);
       // Try to get a cover if we don't have one yet
-      if (!albumMap[rawAlbum].cover && file.cover) {
-        albumMap[rawAlbum].cover = file.cover;
+      if (!albumMap[rawAlbum].cover && file.path) {
+        albumMap[rawAlbum].cover = `media://${encodeURIComponent(file.path)}`;
       }
     });
 

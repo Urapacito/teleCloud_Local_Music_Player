@@ -30,7 +30,7 @@ const Homepage = ({ musicFiles, recentPlayed = [], onPlay, onNavClick, setSelect
         uniqueAlbums.push({
           name: album,
           artist: file.metadata?.artist || 'Unknown Artist',
-          cover: file.cover,
+          cover: file.path ? `media://${encodeURIComponent(file.path)}` : file.cover,
           firstTrackIndex: i,
           file: file,
           songs: musicFiles.filter(f => (f.metadata?.album || 'Unknown Album') === album)
@@ -171,8 +171,8 @@ const Homepage = ({ musicFiles, recentPlayed = [], onPlay, onNavClick, setSelect
             >
               <div style={{ width: '100%', paddingBottom: '100%', position: 'relative', backgroundColor: 'var(--bg-tertiary)', borderRadius: '8px', overflow: 'hidden', marginBottom: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
                 <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}>
-                  {file.cover ? (
-                    <img src={file.cover} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  {(file.path || file.cover) ? (
+                    <img src={file.path ? `media://${encodeURIComponent(file.path)}` : file.cover} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
                   ) : (
                     <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#555' }}>No Cover</div>
                   )}

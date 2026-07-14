@@ -294,8 +294,9 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
               </div>
 
               <img
-                src={file.cover || 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2250%22 height=%2250%22 viewBox=%220 0 50 50%22%3E%3Crect width=%2250%22 height=%2250%22 fill=%22%23333%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-size=%2220%22 fill=%22%23888%22%3E%E2%99%AB%3C/text%3E%3C/svg%3E'}
+                src={file.path ? `media://${encodeURIComponent(file.path)}` : (file.cover || 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2250%22 height=%2250%22 viewBox=%220 0 50 50%22%3E%3Crect width=%2250%22 height=%2250%22 fill=%22%23333%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-size=%2220%22 fill=%22%23888%22%3E%E2%99%AB%3C/text%3E%3C/svg%3E')}
                 alt="cover"
+                loading="lazy"
                 className="cover-art"
               />
 

@@ -1,10 +1,14 @@
-const { app, BrowserWindow, ipcMain, session, net } = require('electron');
+const { app, BrowserWindow, ipcMain, session, net, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fetch = require('node-fetch');
 const dotenv = require('dotenv');
+const crypto = require('crypto');
 
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
+
+// Cover cache directory
+const COVER_CACHE_DIR = path.join(app.getPath('userData'), 'cover-cache');
 
 const tidal = require('./tidal.js');
 require('./telegram.js');
@@ -310,8 +314,52 @@ ipcMain.handle('fetch-image', async (event, url) => {
   });
 });
 
-app.whenReady().then(() => {
-  // The onHeadersReceived logic is now removed.
+app.whenReady().then(async () => {
+  // Create cover cache directory if it doesn't exist
+  if (!fs.existsSync(COVER_CACHE_DIR)) {
+    fs.mkdirSync(COVER_CACHE_DIR, { recursive: true });
+  }
+
+  // Register media:// protocol for on-demand cover art loading
+  protocol.handle('media', async (request) => {
+    try {
+      const urlPath = request.url.replace('media://', '');
+      const songPath = decodeURIComponent(urlPath);
+
+      // Generate cache filename from song path hash
+      const hash = crypto.createHash('md5').update(songPath).digest('hex');
+      const cacheFile = path.join(COVER_CACHE_DIR, `${hash}.jpg`);
+
+      // Check if already cached on disk
+      if (fs.existsSync(cacheFile)) {
+        const buffer = fs.readFileSync(cacheFile);
+        return new Response(buffer, {
+          headers: { 'Content-Type': 'image/jpeg' }
+        });
+      }
+
+      // Extract from file
+      const mm = await import('music-metadata');
+      const metadata = await mm.parseFile(songPath, { duration: false, skipCovers: false, skipPostHeaders: true });
+      const cover = mm.selectCover(metadata.common.picture);
+
+      if (cover) {
+        // Save to disk cache
+        fs.writeFileSync(cacheFile, cover.data);
+
+        return new Response(cover.data, {
+          headers: { 'Content-Type': cover.format || 'image/jpeg' }
+        });
+      }
+
+      // No cover found - return placeholder
+      return new Response('', { status: 404 });
+
+    } catch (err) {
+      console.error('[media://] Cover extraction error:', err.message);
+      return new Response('', { status: 404 });
+    }
+  });
 
   createWindow();
 

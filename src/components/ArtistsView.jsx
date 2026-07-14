@@ -35,7 +35,7 @@ const ArtistsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddP
 
       splitArtists.forEach(artist => {
         if (!artistMap[artist]) {
-          artistMap[artist] = { name: artist, songs: [], cover: file.cover };
+          artistMap[artist] = { name: artist, songs: [], cover: file.path ? `media://${encodeURIComponent(file.path)}` : file.cover };
         }
         artistMap[artist].songs.push(file);
       });
