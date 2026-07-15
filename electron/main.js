@@ -5,7 +5,11 @@ const fetch = require('node-fetch');
 const dotenv = require('dotenv');
 const crypto = require('crypto');
 
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Load .env from different locations in dev vs production
+const envPath = app.isPackaged
+  ? path.join(process.resourcesPath, '.env')  // Production: resources/.env
+  : path.join(__dirname, '..', '.env');        // Dev: project-root/.env
+dotenv.config({ path: envPath });
 
 // Cover cache directory
 const COVER_CACHE_DIR = path.join(app.getPath('userData'), 'cover-cache');
@@ -13,6 +17,7 @@ const COVER_CACHE_DIR = path.join(app.getPath('userData'), 'cover-cache');
 const tidal = require('./tidal.js');
 require('./telegram.js');
 const MusicFolderWatcher = require('./watcher.js');
+const { setupTeleCloudSyncHandlers, cleanupTeleCloudSync } = require('./telegramSync.js');
 
 // File system watcher instance
 let folderWatcher = null;
@@ -20,7 +25,7 @@ let currentlyWatchedPaths = null; // Track currently watched paths to prevent un
 require('./music.js');
 require('./player.js');
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = !app.isPackaged;
 
 // Tidal IPC Handlers
 ipcMain.handle('tidal:login', async () => {
@@ -525,6 +530,9 @@ app.whenReady().then(async () => {
     fs.mkdirSync(COVER_CACHE_DIR, { recursive: true });
   }
 
+  // Setup TeleCloud Sync IPC handlers
+  setupTeleCloudSyncHandlers();
+
   // Register media:// protocol for on-demand cover art loading
   protocol.handle('media', async (request) => {
     try {
@@ -571,6 +579,11 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', async () => {
+  // Cleanup TeleCloud Sync resources
+  await cleanupTeleCloudSync();
 });
 
 app.on('window-all-closed', () => {

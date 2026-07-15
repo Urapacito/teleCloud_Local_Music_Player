@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import TeleCloudSyncSettings from './TeleCloudSyncSettings';
 
 // Custom Dropdown Component
 const CustomDropdown = ({ value, onChange, options, label }) => {
@@ -393,7 +394,7 @@ const SettingsView = ({
     }
   };
 
-  const tabs = ['General', 'Files', 'Audio', 'Advanced Audio', 'Keyboard', 'Downloads', 'Network', 'About'];
+  const tabs = ['General', 'Files', 'Audio', 'Advanced Audio', 'Keyboard', 'Downloads', 'TeleCloud Sync', 'Network', 'About'];
 
   return (
     <div style={{ display: 'flex', height: '100%', color: 'var(--text-main)', padding: '30px' }}>
@@ -1036,6 +1037,10 @@ const SettingsView = ({
               </div>
             </div>
           </div>
+        )}
+
+        {activeTab === 'TeleCloud Sync' && (
+          <TeleCloudSyncSettings />
         )}
 
         {['Network', 'About'].includes(activeTab) && (

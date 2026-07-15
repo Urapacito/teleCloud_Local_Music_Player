@@ -5,7 +5,52 @@
   "main": "electron/main.js",
   "scripts": {
     "dev": "cross-env NODE_ENV=development concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
-    "build": "vite build && electron-builder"
+    "build": "vite build && electron-builder",
+    "clean": "if exist dist rmdir /s /q dist && if exist dist-electron rmdir /s /q dist-electron"
+  },
+  "build": {
+    "appId": "com.telecloud.app",
+    "productName": "TeleCloud",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*",
+      "electron/**/*",
+      "node_modules/**/*",
+      "package.json",
+      "mpv.exe",
+      "mpv.com"
+    ],
+    "extraResources": [
+      {
+        "from": "mpv.exe",
+        "to": "mpv.exe"
+      },
+      {
+        "from": "mpv.com",
+        "to": "mpv.com"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TeleCloud"
+    }
   },
   "keywords": [],
   "author": "",
@@ -22,8 +67,6 @@
     "cross-env": "^10.1.0",
     "dashjs": "^5.2.0",
     "dotenv": "^17.4.2",
-    "electron": "^41.7.1",
-    "electron-builder": "^26.15.3",
     "electron-is-dev": "^3.0.1",
     "electron-store": "^11.0.2",
     "electron-widevinecdm": "^8.0.0",
@@ -43,6 +86,8 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "electron": "^41.7.1",
+    "electron-builder": "^26.15.3",
     "electron-rebuild": "^3.2.9"
   }
 }

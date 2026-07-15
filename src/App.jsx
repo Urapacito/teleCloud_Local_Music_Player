@@ -334,14 +334,12 @@ function App() {
   };
 
   useEffect(() => {
-    const ipcRenderer = window.ipcRenderer;
-    ipcRenderer.invoke('telegram-check-auth').then(isAuth => {
-      if (isAuth) {
-        setIsAuthenticated(true);
-      }
-      setIsCheckingAuth(false);
-    });
+    // Skip Telegram auth check - app now works without mandatory Telegram login
+    // TeleCloud Sync is now optional via Settings
+    setIsAuthenticated(true);
+    setIsCheckingAuth(false);
 
+    const ipcRenderer = window.ipcRenderer;
     // Restore Tidal session if available
     ipcRenderer.invoke('tidal:restoreSession').then(res => {
       if (res.success && res.session) {
