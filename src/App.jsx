@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 // import * as tidalPlayer from '@tidal-music/player'; // No longer using the web player SDK
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -105,6 +105,17 @@ function App() {
   // Scan progress state
   const [scanProgress, setScanProgress] = useState(null); // { type: 'scanning'|'refreshing', status: 'inProgress'|'done', message: string }
 
+  // 🛡️ Ref to track previous folder list and prevent unnecessary watcher restarts
+  const previousFoldersRef = useRef(null);
+
+  // 🛡️ Ref to track current file for event listeners (avoids re-registering on every track change)
+  const currentFileRef = useRef(currentFile);
+
+  // Keep currentFileRef in sync with currentFile
+  useEffect(() => {
+    currentFileRef.current = currentFile;
+  }, [currentFile]);
+
   // Set EQ in IPC whenever it changes (with debounce to prevent mpv lag)
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -137,9 +148,23 @@ function App() {
 
   // File System Watcher - Start watching when folders are set
   useEffect(() => {
+    // 🛡️ VALUE COMPARISON: Check if folder list actually changed (not just reference)
+    const foldersChanged = !previousFoldersRef.current ||
+      previousFoldersRef.current.length !== musicFolderList.length ||
+      previousFoldersRef.current.some((path, i) => path !== musicFolderList[i]);
+
+    if (!foldersChanged) {
+      console.log('[App] Folder list unchanged (same values), skipping watcher restart');
+      return; // Skip if folders haven't changed
+    }
+
+    // Update ref to track current folders
+    previousFoldersRef.current = musicFolderList;
+
     const startWatcher = async () => {
       if (musicFolderList && musicFolderList.length > 0) {
         try {
+          console.log('[App] Folder list changed, starting watcher for:', musicFolderList);
           await window.ipcRenderer.invoke('start-watching', musicFolderList);
         } catch (err) {
           console.error('[App] Error starting file watcher:', err);
@@ -155,6 +180,7 @@ function App() {
   }, [musicFolderList]);
 
   // Listen for real-time library updates from file watcher
+  // 🛡️ OPTIMIZATION: Register listener only once (not on every track change)
   useEffect(() => {
     const handleLibraryUpdate = (event, update) => {
       if (update.type === 'add') {
@@ -167,8 +193,9 @@ function App() {
       } else if (update.type === 'delete') {
         setMusicFiles(prev => prev.filter(f => f.path !== update.path));
 
-        // If deleted file was playing, stop playback
-        if (currentFile && currentFile.path === update.path) {
+        // If deleted file was playing, stop playback (use ref to avoid stale closure)
+        const current = currentFileRef.current;
+        if (current && current.path === update.path) {
           window.ipcRenderer.invoke('stop-playback');
           setIsPlaying(false);
           setCurrentFile(null);
@@ -183,7 +210,7 @@ function App() {
     return () => {
       window.ipcRenderer.removeAllListeners('library-updated');
     };
-  }, [currentFile]);
+  }, []); // Empty array - register only once, use ref for currentFile
 
   // Global keyboard event listener (must be before any conditional returns)
   useEffect(() => {
@@ -331,6 +358,21 @@ function App() {
   // Removed all Tidal Web Player SDK event listeners.
   // Playback state is now managed universally by the MPV backend via IPC events.
 
+  // 🛡️ OPTIMIZATION: Load settings only once on authentication (not on every render)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const ipcRenderer = window.ipcRenderer;
+    ipcRenderer.invoke('load-store', 'settings').then(settings => {
+      if (settings?.disabledDevices) {
+        setDisabledDevices(settings.disabledDevices);
+      }
+      if (settings?.musicFolderList) {
+        setMusicFolderList(settings.musicFolderList);
+      }
+    });
+  }, [isAuthenticated]); // Only run when authentication changes
+
   useEffect(() => {
     if (isAuthenticated) {
       const ipcRenderer = window.ipcRenderer;
@@ -353,14 +395,6 @@ function App() {
         setRecentPlayed(recent);
       });
       ipcRenderer.invoke('load-store', 'playlists').then(data => setPlaylists(data || []));
-      ipcRenderer.invoke('load-store', 'settings').then(settings => {
-        if (settings && settings.disabledDevices) {
-          setDisabledDevices(settings.disabledDevices);
-        }
-        if (settings && settings.musicFolderList) {
-          setMusicFolderList(settings.musicFolderList);
-        }
-      });
 
       ipcRenderer.on('track-ended', () => {
         handleTrackEndedRef.current?.();
@@ -1162,7 +1196,7 @@ function App() {
 
       {/* Spectrum Modal */}
       {spectrumFile && (
-        <SpectrumModal file={spectrumFile} onClose={() => setSpectrumFile(null)} />
+        <SpectrumModal file={spectrumFile} onClose={() => setSpectrumFile(null)} theme={theme} />
       )}
 
       {/* Scan Progress Popup */}

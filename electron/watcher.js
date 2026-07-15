@@ -1,62 +1,80 @@
-const chokidar = require('chokidar');
 const path = require('path');
+const chokidar = require('chokidar');
 
 class MusicFolderWatcher {
     constructor(folders, onChange) {
-        this.folders = folders;
+        // Keep absolute Windows paths using backslashes
+        this.folders = folders.map(f => path.resolve(f));
         this.onChange = onChange;
         this.watcher = null;
     }
 
     start() {
-        if (this.watcher) {
-            this.stop();
-        }
+        if (this.watcher) return;
+
+        console.log(`\n==================================================`);
+        console.log(`🎧 [Watcher] Active on: ${this.folders.join(', ')}`);
+        console.log(`==================================================\n`);
 
         this.watcher = chokidar.watch(this.folders, {
-            ignored: /(^|[\/\\])\../,  // Ignore hidden files
+            ignored: /(^|[\/\\])\../,  // Ignore hidden dotfiles
             persistent: true,
-            ignoreInitial: true,  // Don't trigger on startup
-            depth: 99,  // Watch all subdirectories
+            ignoreInitial: true,       // CRITICAL: Silent boot (doesn't log your 10,000 existing files)
+            depth: 99,                 // Watch nested subfolders
+
+            // Polling is required for reliable events on secondary Windows partitions (D:)
+            usePolling: true,
+            interval: 1000,            // Poll once a second to keep CPU near 0%
+
+            // Ensures we don't trigger while a file is still copying/downloading
             awaitWriteFinish: {
-                stabilityThreshold: 500,  // Wait 500ms after last change (faster for moves)
+                stabilityThreshold: 1000,
                 pollInterval: 100
-            },
-            // Enable atomic write detection for better move/rename handling
-            atomic: true
+            }
         });
 
-        this.watcher
-            .on('add', (filePath) => {
-                if (this.isMusicFile(filePath)) {
-                    console.log(`[Watcher] File added: ${filePath}`);
-                    this.onChange('add', filePath);
-                }
-            })
-            .on('change', (filePath) => {
-                if (this.isMusicFile(filePath)) {
-                    console.log(`[Watcher] File changed: ${filePath}`);
-                    this.onChange('change', filePath);
-                }
-            })
-            .on('unlink', (filePath) => {
-                if (this.isMusicFile(filePath)) {
-                    console.log(`[Watcher] File deleted: ${filePath}`);
-                    this.onChange('delete', filePath);
-                }
-            })
-            .on('error', (error) => {
-                console.error('[Watcher] Error:', error);
-            });
+        // 1. Silent Boot Confirmation
+        this.watcher.on('ready', () => {
+            console.log('⚡ [Watcher State] Standing by... Go ahead and change a music file!');
+        });
 
-        console.log('[Watcher] Started watching folders:', this.folders);
+        // 2. High-Visibility File Addition
+        this.watcher.on('add', (filePath) => {
+            if (this.isMusicFile(filePath)) {
+                const fileName = path.basename(filePath);
+                console.log(`🟢 [ADDED] ${fileName}`);
+                this.onChange('add', filePath);
+            }
+        });
+
+        // 3. High-Visibility File Modification
+        this.watcher.on('change', (filePath) => {
+            if (this.isMusicFile(filePath)) {
+                const fileName = path.basename(filePath);
+                console.log(`🟡 [CHANGED] ${fileName}`);
+                this.onChange('change', filePath);
+            }
+        });
+
+        // 4. High-Visibility File Deletion
+        this.watcher.on('unlink', (filePath) => {
+            if (this.isMusicFile(filePath)) {
+                const fileName = path.basename(filePath);
+                console.log(`🔴 [DELETED] ${fileName}`);
+                this.onChange('delete', filePath);
+            }
+        });
+
+        this.watcher.on('error', (error) => {
+            console.error('❌ [Watcher Error]:', error.message);
+        });
     }
 
     stop() {
         if (this.watcher) {
             this.watcher.close();
             this.watcher = null;
-            console.log('[Watcher] Stopped watching');
+            console.log('🛑 [Watcher] Stopped and sleeping.');
         }
     }
 

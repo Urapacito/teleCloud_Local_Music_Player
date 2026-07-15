@@ -219,6 +219,12 @@ async function scanWithDatabaseCache(folders, progressCallback) {
       // Cover extraction removed - using media:// protocol for on-demand loading
       const hasCover = !!(parsed.common.picture && parsed.common.picture.length > 0);
 
+      // 🔍 DEBUG: Log bit depth extraction
+      console.log(`[Scan] Parsing: ${fileInfo.name}`);
+      console.log(`[Scan]   Bit Depth: ${parsed.format.bitsPerSample}`);
+      console.log(`[Scan]   Sample Rate: ${parsed.format.sampleRate}`);
+      console.log(`[Scan]   Format Object Keys:`, Object.keys(parsed.format));
+
       // Store in database
       const dbData = {
         path: fileInfo.path,
@@ -234,7 +240,7 @@ async function scanWithDatabaseCache(folders, progressCallback) {
         duration: parsed.format.duration || 0,
         bitrate: parsed.format.bitrate || 0,
         sampleRate: parsed.format.sampleRate || 0,
-        bit_depth: parsed.format.bitsPerSample || 0,
+        bitDepth: parsed.format.bitsPerSample || 0,  // FIX: camelCase to match database.js
         lyrics: lyricsStr,
         cover: null,  // Not storing covers - loaded via media:// protocol
         hasCover: hasCover
@@ -683,24 +689,68 @@ ipcMain.handle('select-music-folder', async () => {
 
 const libraryPath = path.join(app.getPath('userData'), 'library.json');
 
+// 🔄 UNIFIED STORAGE: Load library from database (single source of truth)
 ipcMain.handle('load-library', async () => {
   try {
-    if (fs.existsSync(libraryPath)) {
-      const data = fs.readFileSync(libraryPath, 'utf8');
-      return JSON.parse(data);
-    }
+    const dbFiles = database.getAllFiles();
+    // Transform database format to frontend format
+    return dbFiles.map(f => ({
+      name: f.name || path.basename(f.path),
+      path: f.path,
+      ext: f.ext || path.extname(f.path),
+      size: f.size,
+      metadata: {
+        title: f.title,
+        artist: f.artist,
+        album: f.album,
+        year: f.year,
+        genre: f.genre,
+        duration: f.duration,
+        bitrate: f.bitrate,
+        sampleRate: f.sample_rate,
+        bitsPerSample: f.bit_depth,
+        lyrics: f.lyrics || ''
+      },
+      cover: f.cover,
+      hasCover: f.hasCover
+    }));
   } catch (err) {
-    console.error('Error loading library:', err);
+    console.error('Error loading library from database:', err);
+    return [];
   }
-  return [];
 });
 
+// 🔄 UNIFIED STORAGE: Save library to database (single source of truth)
 ipcMain.handle('save-library', async (event, libraryData) => {
   try {
-    fs.writeFileSync(libraryPath, JSON.stringify(libraryData), 'utf8');
+    // Batch update database with all files
+    const dbData = libraryData.map(f => ({
+      path: f.path,
+      mtime: f.mtime || Date.now(),
+      size: f.size,
+      name: f.name,
+      ext: f.ext,
+      title: f.metadata?.title || f.name,
+      artist: f.metadata?.artist || 'Unknown Artist',
+      album: f.metadata?.album || 'Unknown Album',
+      year: f.metadata?.year || null,
+      genre: f.metadata?.genre || null,
+      trackNumber: f.metadata?.trackNumber || null,
+      discNumber: f.metadata?.discNumber || null,
+      duration: f.metadata?.duration || 0,
+      bitrate: f.metadata?.bitrate || 0,
+      sampleRate: f.metadata?.sampleRate || 0,
+      bitDepth: f.metadata?.bitsPerSample || 0,  // FIX: camelCase to match database.js
+      lyrics: f.metadata?.lyrics || '',
+      cover: f.cover || null,
+      hasCover: f.hasCover || false
+    }));
+
+    database.insertOrUpdateFilesBatch(dbData);
+    console.log(`[Database] Saved ${dbData.length} files to database`);
     return true;
   } catch (err) {
-    console.error('Error saving library:', err);
+    console.error('Error saving library to database:', err);
     return false;
   }
 });

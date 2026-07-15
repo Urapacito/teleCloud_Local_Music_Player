@@ -259,7 +259,7 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
           const bitDepth = file.metadata?.bitsPerSample;
           const sampleRate = file.metadata?.sampleRate ? `${Math.round(file.metadata.sampleRate / 1000)}kHz` : '';
           const bitrateStr = file.metadata?.bitrate ? `${Math.round(file.metadata.bitrate / 1000)}kbps` : '';
-          const qualityString = [file.ext?.toUpperCase().replace('.', ''), bitDepth ? `${bitDepth}-bit` : '', sampleRate, bitrateStr].filter(Boolean).join(' / ');
+          const qualityString = [file.ext?.toUpperCase().replace('.', ''), (bitDepth && bitDepth > 0) ? `${bitDepth}-bit` : '', sampleRate, bitrateStr].filter(Boolean).join(' / ');
           const isActive = currentFile && currentFile.path === file.path;
           const isFav = favorites.some(f => f.path === file.path);
 

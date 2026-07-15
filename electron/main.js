@@ -16,6 +16,7 @@ const MusicFolderWatcher = require('./watcher.js');
 
 // File system watcher instance
 let folderWatcher = null;
+let currentlyWatchedPaths = null; // Track currently watched paths to prevent unnecessary restarts
 require('./music.js');
 require('./player.js');
 
@@ -258,19 +259,48 @@ ipcMain.handle('apply-audio-settings', async (event, settings) => {
 // File System Watcher Handlers
 ipcMain.handle('start-watching', async (event, folders) => {
   try {
+    console.log('[Main] start-watching called with folders:', folders);
+
+    // 🛡️ GUARD: Check if paths are identical to prevent unnecessary restarts
+    if (currentlyWatchedPaths && folderWatcher) {
+      const pathsIdentical =
+        currentlyWatchedPaths.length === folders.length &&
+        currentlyWatchedPaths.every((path, index) => path === folders[index]);
+
+      if (pathsIdentical) {
+        console.log('[Main] ✓ Paths unchanged, skipping watcher restart (already watching)');
+        return { success: true, skipped: true, message: 'Already watching these paths' };
+      }
+      console.log('[Main] Paths changed, restarting watcher');
+    }
+
+    // Stop existing watcher if paths changed
     if (folderWatcher) {
+      console.log('[Main] Stopping existing watcher');
       folderWatcher.stop();
+      folderWatcher = null;
     }
 
     if (folders && folders.length > 0) {
+      console.log('[Main] Creating new watcher for', folders.length, 'folder(s)');
+
+      // Update tracked paths BEFORE starting watcher
+      currentlyWatchedPaths = [...folders];
+
       folderWatcher = new MusicFolderWatcher(folders, async (action, filePath) => {
+        console.log(`[Main] Watcher callback triggered: ${action} - ${filePath}`);
         await handleFileChange(action, filePath);
       });
       folderWatcher.start();
+      console.log('[Main] Watcher started successfully');
       return { success: true };
+    } else {
+      console.log('[Main] No folders provided to watch');
+      currentlyWatchedPaths = null; // Clear tracked paths
+      return { success: false, error: 'No folders provided' };
     }
   } catch (err) {
-    console.error('Error starting file watcher:', err);
+    console.error('[Main] Error starting file watcher:', err);
     return { success: false, error: err.message };
   }
 });
@@ -281,6 +311,9 @@ ipcMain.handle('stop-watching', async () => {
       folderWatcher.stop();
       folderWatcher = null;
     }
+    // Clear tracked paths when watcher is stopped
+    currentlyWatchedPaths = null;
+    console.log('[Main] Watcher stopped and tracked paths cleared');
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -327,75 +360,89 @@ async function handleFileChange(action, filePath) {
     }
     const mainWindow = windows[0];
 
-    const { getDatabase } = require('./database');
-    const db = getDatabase();
+    const { insertOrUpdateFile, deleteFile } = require('./database');
 
     if (action === 'add' || action === 'change') {
       console.log(`[Watcher] Processing ${action}: ${filePath}`);
 
-      // Parse the new/changed file and update database
+      // Parse the new/changed file metadata
       const mm = await import('music-metadata');
       const stats = fs.statSync(filePath);
       const metadata = await mm.parseFile(filePath, { duration: true, skipCovers: true });
 
-      const fileData = {
+      // Extract metadata with proper fallbacks
+      const title = metadata.common.title || path.basename(filePath, path.extname(filePath));
+      const artist = metadata.common.artist || 'Unknown';
+      const album = metadata.common.album || 'Unknown';
+      const year = metadata.common.year || null;
+      const genre = metadata.common.genre ? metadata.common.genre.join(', ') : null;
+      const duration = metadata.format.duration || 0;
+      const bitrate = metadata.format.bitrate || 0;
+      const sampleRate = metadata.format.sampleRate || 0;
+      const bitsPerSample = metadata.format.bitsPerSample || 0;
+
+      // Create database format (flat structure)
+      const dbData = {
+        path: filePath,
+        name: path.basename(filePath),
+        ext: path.extname(filePath),
+        size: stats.size,
+        mtime: stats.mtimeMs,
+        title,
+        artist,
+        album,
+        year,
+        genre,
+        trackNumber: metadata.common.track?.no || null,
+        discNumber: metadata.common.disk?.no || null,
+        duration,
+        bitrate,
+        sampleRate,
+        bit_depth: bitsPerSample,  // Database uses bit_depth
+        lyrics: '',
+        cover: null,
+        hasCover: false
+      };
+
+      // Create frontend format (nested metadata structure)
+      const frontendData = {
         path: filePath,
         name: path.basename(filePath),
         ext: path.extname(filePath),
         size: stats.size,
         mtime: stats.mtimeMs,
         metadata: {
-          title: metadata.common.title || path.basename(filePath, path.extname(filePath)),
-          artist: metadata.common.artist || 'Unknown',
-          album: metadata.common.album || 'Unknown',
-          year: metadata.common.year || null,
-          genre: metadata.common.genre ? metadata.common.genre.join(', ') : null,
-          duration: metadata.format.duration || 0,
-          bitrate: metadata.format.bitrate || 0,
-          sampleRate: metadata.format.sampleRate || 0,
-          bitsPerSample: metadata.format.bitsPerSample || 0
-        }
+          title,
+          artist,
+          album,
+          year,
+          genre,
+          duration,
+          bitrate,
+          sampleRate,
+          bitsPerSample
+        },
+        cover: null,
+        hasCover: false
       };
 
-      // Update database
-      const stmt = db.prepare(`
-        INSERT OR REPLACE INTO music_files (
-          path, name, ext, size, mtime, 
-          title, artist, album, year, genre,
-          duration, bitrate, sample_rate, bit_depth
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      // Update database with flat structure
+      insertOrUpdateFile(dbData);
 
-      stmt.run(
-        fileData.path,
-        fileData.name,
-        fileData.ext,
-        fileData.size,
-        fileData.mtime,
-        fileData.metadata.title,
-        fileData.metadata.artist,
-        fileData.metadata.album,
-        fileData.metadata.year,
-        fileData.metadata.genre,
-        fileData.metadata.duration,
-        fileData.metadata.bitrate,
-        fileData.metadata.sampleRate,
-        fileData.metadata.bitsPerSample
-      );
-
+      console.log(`[Watcher] ✅ Added to DB: "${title}" by ${artist} (${bitsPerSample}-bit/${sampleRate}Hz)`);
       console.log(`[Watcher] Sending ${action} update to renderer`);
-      // Notify renderer
+
+      // Notify renderer with nested structure
       mainWindow.webContents.send('library-updated', {
         type: action === 'add' ? 'add' : 'update',
-        file: fileData
+        file: frontendData
       });
 
     } else if (action === 'delete') {
       console.log(`[Watcher] Processing delete: ${filePath}`);
 
       // Remove from database
-      const stmt = db.prepare('DELETE FROM music_files WHERE path = ?');
-      stmt.run(filePath);
+      deleteFile(filePath);
 
       console.log('[Watcher] Sending delete update to renderer');
       // Notify renderer

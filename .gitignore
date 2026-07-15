@@ -8,3 +8,4 @@ release/
 *.exe
 mpv.com
 report/
+test-flac-metadata.js
