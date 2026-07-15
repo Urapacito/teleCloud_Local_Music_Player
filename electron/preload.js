@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld('shell', shell);
 contextBridge.exposeInMainWorld('electronAPI', {
     fetchImage: (url) => ipcRenderer.invoke('fetch-image', url),
     readLocalFile: (filePath) => ipcRenderer.invoke('read-local-file', filePath),
+    clearDatabaseAndCache: () => ipcRenderer.invoke('clear-database-and-cache'),
 });

@@ -236,6 +236,11 @@ const SettingsView = ({
   });
   const [editingShortcut, setEditingShortcut] = useState(null);
 
+  // Clear cache & database modal states
+  const [showClearInfoModal, setShowClearInfoModal] = useState(false);
+  const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+
   useEffect(() => {
     const fetchSettings = async () => {
       const ipcRenderer = window.ipcRenderer;
@@ -362,6 +367,29 @@ const SettingsView = ({
     } else {
       setMusicFiles([]);
       await window.ipcRenderer.invoke('save-library', []);
+    }
+  };
+
+  const handleClearCache = async () => {
+    setIsClearing(true);
+    setShowClearConfirmModal(false);
+
+    try {
+      const result = await window.electronAPI.clearDatabaseAndCache();
+
+      if (result.success) {
+        // Clear the current music files list
+        setMusicFiles([]);
+
+        // Show success message
+        alert('✅ Cache and database cleared successfully!\n\nPlease do a full scan to rebuild your library.');
+      } else {
+        alert('❌ Error clearing cache: ' + (result.error || 'Unknown error'));
+      }
+    } catch (error) {
+      alert('❌ Error clearing cache: ' + error.message);
+    } finally {
+      setIsClearing(false);
     }
   };
 
@@ -573,6 +601,101 @@ const SettingsView = ({
                   </div>
                 ))
               )}
+            </div>
+
+            {/* Cache & Database Management */}
+            <h3 style={{ fontSize: '18px', marginTop: '40px', marginBottom: '20px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              Cache & Database Management
+              <button
+                onClick={() => setShowClearInfoModal(true)}
+                style={{
+                  background: 'var(--bg-hover)',
+                  border: '1px solid var(--bg-tertiary)',
+                  borderRadius: '50%',
+                  width: '24px',
+                  height: '24px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                  color: 'var(--text-muted)',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--accent-red)';
+                  e.currentTarget.style.color = 'white';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-hover)';
+                  e.currentTarget.style.color = 'var(--text-muted)';
+                }}
+                title="What gets cleared?"
+              >
+                i
+              </button>
+            </h3>
+            <div style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--bg-tertiary)', padding: '25px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '6px' }}>Clear Cached Data & Database</div>
+                  <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                    Remove all cached music metadata and force a fresh library scan.
+                    <br />
+                    <span style={{ fontSize: '12px', color: 'var(--text-main)', opacity: 0.7 }}>
+                      ✓ Your music files will NOT be deleted - only cached information is cleared.
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowClearConfirmModal(true)}
+                  disabled={isClearing}
+                  style={{
+                    background: isClearing ? 'var(--bg-hover)' : 'transparent',
+                    border: '1px solid var(--accent-red)',
+                    color: isClearing ? 'var(--text-muted)' : 'var(--accent-red)',
+                    padding: '10px 24px',
+                    borderRadius: '20px',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    cursor: isClearing ? 'not-allowed' : 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isClearing) {
+                      e.currentTarget.style.background = 'var(--accent-red)';
+                      e.currentTarget.style.color = 'white';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isClearing) {
+                      e.currentTarget.style.background = 'transparent';
+                      e.currentTarget.style.color = 'var(--accent-red)';
+                    }
+                  }}
+                >
+                  {isClearing ? (
+                    <>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
+                        <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                      </svg>
+                      Clearing...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                      Clear Cache & Database
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -963,6 +1086,188 @@ const SettingsView = ({
         )}
 
       </div>
+
+      {/* Info Modal */}
+      {showClearInfoModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000
+          }}
+          onClick={() => setShowClearInfoModal(false)}
+        >
+          <div
+            style={{
+              background: 'var(--bg-secondary)',
+              borderRadius: '16px',
+              padding: '30px',
+              maxWidth: '600px',
+              width: '90%',
+              border: '2px solid var(--bg-tertiary)',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ fontSize: '22px', fontWeight: 'bold', marginBottom: '20px', color: 'var(--text-main)' }}>
+              What Gets Cleared?
+            </h2>
+
+            <div style={{ fontSize: '14px', color: 'var(--text-main)', lineHeight: '1.8' }}>
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '16px' }}>📦 Cache</div>
+                <div style={{ color: 'var(--text-muted)', paddingLeft: '20px' }}>
+                  • Album cover art extracted from music files<br />
+                  • Temporary image files stored locally
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '16px' }}>🗄️ Database</div>
+                <div style={{ color: 'var(--text-muted)', paddingLeft: '20px' }}>
+                  • Song metadata (title, artist, album, genre)<br />
+                  • File information (bitrate, sample rate, duration)<br />
+                  • Scan timestamps and file modification dates
+                </div>
+              </div>
+
+              <div style={{ background: 'rgba(74, 222, 128, 0.1)', border: '1px solid rgba(74, 222, 128, 0.3)', borderRadius: '8px', padding: '15px', marginBottom: '20px' }}>
+                <div style={{ fontWeight: 'bold', color: '#4ade80', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '18px' }}>✓</span>
+                  <span>Your Music Files Are Safe</span>
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
+                  Only cached information is deleted. Your actual music files (.flac, .mp3, etc.) remain untouched in their original locations.
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '0' }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '16px' }}>🔄 After Clearing</div>
+                <div style={{ color: 'var(--text-muted)', paddingLeft: '20px' }}>
+                  • Library will appear empty until you scan again<br />
+                  • All files will be treated as "new" on next scan<br />
+                  • Metadata will be re-extracted from files<br />
+                  • Cover art will be re-cached as needed
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '25px', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowClearInfoModal(false)}
+                style={{
+                  background: 'var(--accent-red)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '10px 24px',
+                  borderRadius: '20px',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#c1121f'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent-red)'; }}
+              >
+                Got it!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {showClearConfirmModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000
+          }}
+          onClick={() => setShowClearConfirmModal(false)}
+        >
+          <div
+            style={{
+              background: 'var(--bg-secondary)',
+              borderRadius: '16px',
+              padding: '30px',
+              maxWidth: '500px',
+              width: '90%',
+              border: '2px solid var(--bg-tertiary)',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ fontSize: '22px', fontWeight: 'bold', marginBottom: '15px', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '28px' }}>⚠️</span>
+              Clear Cache & Database?
+            </h2>
+
+            <p style={{ fontSize: '15px', color: 'var(--text-muted)', marginBottom: '20px', lineHeight: '1.6' }}>
+              This will remove all cached music metadata and cover art. Your library will appear empty until you perform a full scan.
+            </p>
+
+            <div style={{ background: 'rgba(74, 222, 128, 0.1)', border: '1px solid rgba(74, 222, 128, 0.3)', borderRadius: '8px', padding: '12px', marginBottom: '25px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--text-main)' }}>
+                <strong style={{ color: '#4ade80' }}>✓ Don't worry:</strong> Your music files will NOT be deleted
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowClearConfirmModal(false)}
+                style={{
+                  background: 'var(--bg-hover)',
+                  color: 'var(--text-main)',
+                  border: '1px solid var(--bg-tertiary)',
+                  padding: '10px 24px',
+                  borderRadius: '20px',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleClearCache}
+                style={{
+                  background: 'var(--accent-red)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '10px 24px',
+                  borderRadius: '20px',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#c1121f'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent-red)'; }}
+              >
+                Yes, Clear Everything
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

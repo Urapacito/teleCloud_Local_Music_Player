@@ -135,6 +135,56 @@ function App() {
     loadShortcuts();
   }, []);
 
+  // File System Watcher - Start watching when folders are set
+  useEffect(() => {
+    const startWatcher = async () => {
+      if (musicFolderList && musicFolderList.length > 0) {
+        try {
+          await window.ipcRenderer.invoke('start-watching', musicFolderList);
+        } catch (err) {
+          console.error('[App] Error starting file watcher:', err);
+        }
+      }
+    };
+    startWatcher();
+
+    // Cleanup: stop watcher when component unmounts
+    return () => {
+      window.ipcRenderer.invoke('stop-watching');
+    };
+  }, [musicFolderList]);
+
+  // Listen for real-time library updates from file watcher
+  useEffect(() => {
+    const handleLibraryUpdate = (event, update) => {
+      if (update.type === 'add') {
+        setMusicFiles(prev => [...prev, update.file]);
+        showToast(`New song added: ${update.file.metadata?.title || update.file.name}`, 'info');
+      } else if (update.type === 'update') {
+        setMusicFiles(prev => prev.map(f =>
+          f.path === update.file.path ? update.file : f
+        ));
+      } else if (update.type === 'delete') {
+        setMusicFiles(prev => prev.filter(f => f.path !== update.path));
+
+        // If deleted file was playing, stop playback
+        if (currentFile && currentFile.path === update.path) {
+          window.ipcRenderer.invoke('stop-playback');
+          setIsPlaying(false);
+          setCurrentFile(null);
+        }
+
+        showToast('Song removed from library', 'info');
+      }
+    };
+
+    window.ipcRenderer.on('library-updated', handleLibraryUpdate);
+
+    return () => {
+      window.ipcRenderer.removeAllListeners('library-updated');
+    };
+  }, [currentFile]);
+
   // Global keyboard event listener (must be before any conditional returns)
   useEffect(() => {
     const handleKeyDown = (e) => {

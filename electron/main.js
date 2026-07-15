@@ -12,6 +12,10 @@ const COVER_CACHE_DIR = path.join(app.getPath('userData'), 'cover-cache');
 
 const tidal = require('./tidal.js');
 require('./telegram.js');
+const MusicFolderWatcher = require('./watcher.js');
+
+// File system watcher instance
+let folderWatcher = null;
 require('./music.js');
 require('./player.js');
 
@@ -250,6 +254,160 @@ ipcMain.handle('apply-audio-settings', async (event, settings) => {
     return { success: false, error: err.message };
   }
 });
+
+// File System Watcher Handlers
+ipcMain.handle('start-watching', async (event, folders) => {
+  try {
+    if (folderWatcher) {
+      folderWatcher.stop();
+    }
+
+    if (folders && folders.length > 0) {
+      folderWatcher = new MusicFolderWatcher(folders, async (action, filePath) => {
+        await handleFileChange(action, filePath);
+      });
+      folderWatcher.start();
+      return { success: true };
+    }
+  } catch (err) {
+    console.error('Error starting file watcher:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('stop-watching', async () => {
+  try {
+    if (folderWatcher) {
+      folderWatcher.stop();
+      folderWatcher = null;
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Clear database and cache - start fresh
+ipcMain.handle('clear-database-and-cache', async () => {
+  try {
+    const { clearDatabase, closeDatabase } = require('./database');
+
+    // Clear all data from database
+    clearDatabase();
+
+    // Close database connection
+    closeDatabase();
+
+    // Delete the actual database files
+    const dbPath = path.join(app.getPath('userData'), 'music-library.db');
+    const walPath = dbPath + '-wal';
+    const shmPath = dbPath + '-shm';
+
+    // Delete files if they exist
+    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+    if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+    if (fs.existsSync(shmPath)) fs.unlinkSync(shmPath);
+
+    console.log('[Database] Database and cache cleared successfully');
+    return { success: true, message: 'Database and cache cleared. Please restart the app and do a full scan.' };
+  } catch (err) {
+    console.error('[Database] Error clearing database:', err);
+    return { success: false, error: err.message };
+  }
+});
+
+// Handle individual file changes detected by watcher
+async function handleFileChange(action, filePath) {
+  try {
+    // Get the current window's webContents
+    const windows = BrowserWindow.getAllWindows();
+    if (windows.length === 0) {
+      console.log('[Watcher] No windows available to send update');
+      return;
+    }
+    const mainWindow = windows[0];
+
+    const { getDatabase } = require('./database');
+    const db = getDatabase();
+
+    if (action === 'add' || action === 'change') {
+      console.log(`[Watcher] Processing ${action}: ${filePath}`);
+
+      // Parse the new/changed file and update database
+      const mm = await import('music-metadata');
+      const stats = fs.statSync(filePath);
+      const metadata = await mm.parseFile(filePath, { duration: true, skipCovers: true });
+
+      const fileData = {
+        path: filePath,
+        name: path.basename(filePath),
+        ext: path.extname(filePath),
+        size: stats.size,
+        mtime: stats.mtimeMs,
+        metadata: {
+          title: metadata.common.title || path.basename(filePath, path.extname(filePath)),
+          artist: metadata.common.artist || 'Unknown',
+          album: metadata.common.album || 'Unknown',
+          year: metadata.common.year || null,
+          genre: metadata.common.genre ? metadata.common.genre.join(', ') : null,
+          duration: metadata.format.duration || 0,
+          bitrate: metadata.format.bitrate || 0,
+          sampleRate: metadata.format.sampleRate || 0,
+          bitsPerSample: metadata.format.bitsPerSample || 0
+        }
+      };
+
+      // Update database
+      const stmt = db.prepare(`
+        INSERT OR REPLACE INTO music_files (
+          path, name, ext, size, mtime, 
+          title, artist, album, year, genre,
+          duration, bitrate, sample_rate, bit_depth
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      stmt.run(
+        fileData.path,
+        fileData.name,
+        fileData.ext,
+        fileData.size,
+        fileData.mtime,
+        fileData.metadata.title,
+        fileData.metadata.artist,
+        fileData.metadata.album,
+        fileData.metadata.year,
+        fileData.metadata.genre,
+        fileData.metadata.duration,
+        fileData.metadata.bitrate,
+        fileData.metadata.sampleRate,
+        fileData.metadata.bitsPerSample
+      );
+
+      console.log(`[Watcher] Sending ${action} update to renderer`);
+      // Notify renderer
+      mainWindow.webContents.send('library-updated', {
+        type: action === 'add' ? 'add' : 'update',
+        file: fileData
+      });
+
+    } else if (action === 'delete') {
+      console.log(`[Watcher] Processing delete: ${filePath}`);
+
+      // Remove from database
+      const stmt = db.prepare('DELETE FROM music_files WHERE path = ?');
+      stmt.run(filePath);
+
+      console.log('[Watcher] Sending delete update to renderer');
+      // Notify renderer
+      mainWindow.webContents.send('library-updated', {
+        type: 'delete',
+        path: filePath
+      });
+    }
+  } catch (err) {
+    console.error(`[Watcher] Error handling ${action} for ${filePath}:`, err.message);
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({

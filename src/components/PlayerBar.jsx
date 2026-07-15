@@ -506,29 +506,34 @@ const PlayerBar = ({
               <div className="responsive-dropdown" style={{ background: 'var(--bg-card)', borderRadius: '12px', width: '320px', boxShadow: '0 -10px 40px rgba(0,0,0,0.8)', overflow: 'hidden' }}>
                 <div style={{ padding: '15px', borderBottom: '1px solid var(--bg-tertiary)', textAlign: 'center', fontWeight: 'bold', letterSpacing: '1px' }}>QUEUE</div>
                 <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
-                  {queueFiles && queueFiles.length > 0 ? queueFiles.map((file, idx) => (
-                    <div key={idx} style={{ display: 'flex', alignItems: 'center', padding: '10px 15px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'var(--bg-tertiary)', overflow: 'hidden', marginRight: '10px', flexShrink: 0 }}>
-                        {file.cover ? (
-                          <img src={file.cover} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                        ) : (
-                          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg viewBox="0 0 24 24" width="20" height="20" fill="#777"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg></div>
-                        )}
+                  {queueFiles && queueFiles.length > 0 ? queueFiles.map((file, idx) => {
+                    // Generate cover URL for local files using media:// protocol
+                    const coverUrl = file.source === 'tidal' ? file.cover : (file.path ? `media://${encodeURIComponent(file.path)}` : null);
+
+                    return (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', padding: '10px 15px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'var(--bg-tertiary)', overflow: 'hidden', marginRight: '10px', flexShrink: 0 }}>
+                          {coverUrl ? (
+                            <img src={coverUrl} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg viewBox="0 0 24 24" width="20" height="20" fill="#777"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg></div>
+                          )}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '13px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.metadata?.title || file.name}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.metadata?.artist || 'Unknown Artist'}</div>
+                        </div>
+                        <button
+                          onClick={() => onRemoveFromQueue(idx)}
+                          style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '5px', borderRadius: '50%', flexShrink: 0 }}
+                          onMouseOver={e => e.currentTarget.style.color = 'var(--text-main)'}
+                          onMouseOut={e => e.currentTarget.style.color = 'var(--text-muted)'}
+                        >
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg>
+                        </button>
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '13px', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.metadata?.title || file.name}</div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.metadata?.artist || 'Unknown Artist'}</div>
-                      </div>
-                      <button
-                        onClick={() => onRemoveFromQueue(idx)}
-                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '5px', borderRadius: '50%', flexShrink: 0 }}
-                        onMouseOver={e => e.currentTarget.style.color = 'var(--text-main)'}
-                        onMouseOut={e => e.currentTarget.style.color = 'var(--text-muted)'}
-                      >
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg>
-                      </button>
-                    </div>
-                  )) : (
+                    );
+                  }) : (
                     <div style={{ padding: '30px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>Queue is empty.</div>
                   )}
                 </div>
