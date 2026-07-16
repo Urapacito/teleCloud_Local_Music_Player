@@ -312,13 +312,12 @@ function setupTeleCloudSyncHandlers() {
                 return ['.flac', '.mp3', '.wav', '.m4a', '.ogg'].includes(ext);
             });
 
-            // Filter to only files that need syncing (not already synced)
+            // Filter to only files that need syncing (exclude only successfully synced files)
             const MAX_RETRIES = 3;
             const filesToSync = audioFiles.filter(f => {
                 const syncState = getSyncState(f.path);
-                return !syncState ||
-                    syncState.sync_status === 'pending_upload' ||
-                    (syncState.sync_status === 'error' && (syncState.retry_count || 0) < MAX_RETRIES);
+                // Include all files except those that are successfully synced
+                return !syncState || syncState.sync_status !== 'synced';
             });
 
             console.log(`[TeleCloudSync] Found ${audioFiles.length} audio files (${filesToSync.length} need syncing)`);
