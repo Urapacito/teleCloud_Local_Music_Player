@@ -75,6 +75,59 @@ function createSchema() {
     } catch (e) {
         // Column already exists, ignore
     }
+
+    // TeleCloud Sync: Add cloud storage columns
+    try {
+        db.exec('ALTER TABLE music_files ADD COLUMN storage_type TEXT DEFAULT "local"');
+    } catch (e) {
+        // Column already exists
+    }
+    try {
+        db.exec('ALTER TABLE music_files ADD COLUMN telegram_message_id INTEGER');
+    } catch (e) {
+        // Column already exists
+    }
+    try {
+        db.exec('ALTER TABLE music_files ADD COLUMN telegram_channel_id TEXT');
+    } catch (e) {
+        // Column already exists
+    }
+    try {
+        db.exec('ALTER TABLE music_files ADD COLUMN cache_path TEXT');
+    } catch (e) {
+        // Column already exists
+    }
+    try {
+        db.exec('ALTER TABLE music_files ADD COLUMN cloud_checksum TEXT');
+    } catch (e) {
+        // Column already exists
+    }
+    try {
+        db.exec('ALTER TABLE music_files ADD COLUMN last_synced_at TEXT');
+    } catch (e) {
+        // Column already exists
+    }
+
+    // Create sync_state table for TeleCloud Sync
+    const syncStateSchema = `
+        CREATE TABLE IF NOT EXISTS sync_state (
+            file_path TEXT PRIMARY KEY,
+            telegram_message_id INTEGER,
+            telegram_channel_id TEXT,
+            last_synced_at TEXT,
+            local_checksum TEXT,
+            cloud_checksum TEXT,
+            sync_status TEXT DEFAULT 'pending_upload',
+            upload_progress INTEGER DEFAULT 0,
+            download_progress INTEGER DEFAULT 0,
+            error_message TEXT,
+            retry_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_status ON sync_state(sync_status);
+    `;
+    db.exec(syncStateSchema);
 }
 
 /**
@@ -336,6 +389,144 @@ function getStats() {
 }
 
 /**
+ * TeleCloud Sync: Get sync state for a file or all files
+ * @param {string} [filePath] - Optional file path to get specific sync state
+ * @returns {Object|Array} Sync state object or array of all sync states
+ */
+function getSyncState(filePath = null) {
+    if (!db) initDatabase();
+
+    if (filePath) {
+        const stmt = db.prepare('SELECT * FROM sync_state WHERE file_path = ?');
+        return stmt.get(filePath);
+    } else {
+        const stmt = db.prepare('SELECT * FROM sync_state');
+        return stmt.all();
+    }
+}
+
+/**
+ * TeleCloud Sync: Update sync state for a file
+ * @param {string} filePath - File path
+ * @param {Object} stateData - Sync state data
+ * @returns {void}
+ */
+function updateSyncState(filePath, stateData) {
+    if (!db) initDatabase();
+
+    const stmt = db.prepare(`
+        INSERT INTO sync_state (
+            file_path, telegram_message_id, telegram_channel_id,
+            last_synced_at, local_checksum, cloud_checksum,
+            sync_status, upload_progress, download_progress,
+            error_message, retry_count, updated_at
+        ) VALUES (
+            @filePath, @telegramMessageId, @telegramChannelId,
+            @lastSyncedAt, @localChecksum, @cloudChecksum,
+            @syncStatus, @uploadProgress, @downloadProgress,
+            @errorMessage, @retryCount, CURRENT_TIMESTAMP
+        )
+        ON CONFLICT(file_path) DO UPDATE SET
+            telegram_message_id = @telegramMessageId,
+            telegram_channel_id = @telegramChannelId,
+            last_synced_at = @lastSyncedAt,
+            local_checksum = @localChecksum,
+            cloud_checksum = @cloudChecksum,
+            sync_status = @syncStatus,
+            upload_progress = @uploadProgress,
+            download_progress = @downloadProgress,
+            error_message = @errorMessage,
+            retry_count = @retryCount,
+            updated_at = CURRENT_TIMESTAMP
+    `);
+
+    stmt.run({
+        filePath: filePath,
+        telegramMessageId: stateData.telegram_message_id || null,
+        telegramChannelId: stateData.telegram_channel_id || null,
+        lastSyncedAt: stateData.last_synced_at || null,
+        localChecksum: stateData.local_checksum || null,
+        cloudChecksum: stateData.cloud_checksum || null,
+        syncStatus: stateData.sync_status || 'pending_upload',
+        uploadProgress: stateData.upload_progress || 0,
+        downloadProgress: stateData.download_progress || 0,
+        errorMessage: stateData.error_message || null,
+        retryCount: stateData.retry_count || 0
+    });
+}
+
+/**
+ * TeleCloud Sync: Get files by sync status
+ * @param {string} status - Sync status to filter by
+ * @returns {Array} Array of sync state objects
+ */
+function getSyncStateByStatus(status) {
+    if (!db) initDatabase();
+
+    const stmt = db.prepare('SELECT * FROM sync_state WHERE sync_status = ?');
+    return stmt.all(status);
+}
+
+/**
+ * TeleCloud Sync: Delete sync state for a file
+ * @param {string} filePath - File path
+ * @returns {void}
+ */
+function deleteSyncState(filePath) {
+    if (!db) initDatabase();
+
+    const stmt = db.prepare('DELETE FROM sync_state WHERE file_path = ?');
+    stmt.run(filePath);
+}
+
+/**
+ * TeleCloud Sync: Update cloud metadata in music_files table
+ * @param {string} filePath - File path
+ * @param {Object} cloudData - Cloud metadata
+ * @returns {void}
+ */
+function updateCloudMetadata(filePath, cloudData) {
+    if (!db) initDatabase();
+
+    // First check if file exists
+    const existing = getFileByPath(filePath);
+
+    if (!existing) {
+        console.warn(`[Database] updateCloudMetadata: File not found in database: ${filePath}`);
+        console.warn(`[Database] Cloud metadata will be lost. Ensure file is scanned before syncing.`);
+        return;
+    }
+
+    const stmt = db.prepare(`
+        UPDATE music_files
+        SET
+            storage_type = @storageType,
+            telegram_message_id = @telegramMessageId,
+            telegram_channel_id = @telegramChannelId,
+            cache_path = @cachePath,
+            cloud_checksum = @cloudChecksum,
+            last_synced_at = @lastSyncedAt
+        WHERE path = @filePath
+    `);
+
+    const result = stmt.run({
+        filePath: filePath,
+        storageType: cloudData.storage_type || 'both',
+        telegramMessageId: cloudData.telegram_message_id || null,
+        telegramChannelId: cloudData.telegram_channel_id || null,
+        cachePath: cloudData.cache_path || null,
+        cloudChecksum: cloudData.cloud_checksum || null,
+        lastSyncedAt: cloudData.last_synced_at || null
+    });
+
+    if (result.changes > 0) {
+        console.log(`[Database] Updated cloud metadata for: ${filePath} (message_id: ${cloudData.telegram_message_id})`);
+    } else {
+        console.error(`[Database] Failed to update cloud metadata for: ${filePath}`);
+    }
+}
+
+/**
  * Close database connection
  */
 function closeDatabase() {
@@ -357,5 +548,11 @@ module.exports = {
     getFilesNeedingUpdate,
     clearDatabase,
     getStats,
-    closeDatabase
+    closeDatabase,
+    // TeleCloud Sync functions
+    getSyncState,
+    updateSyncState,
+    getSyncStateByStatus,
+    deleteSyncState,
+    updateCloudMetadata
 };

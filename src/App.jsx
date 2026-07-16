@@ -709,7 +709,7 @@ function App() {
       // The contextList should be passed from the component that calls playMusic.
       const listToPlay = contextList || (file.source === 'tidal' ? [file] : musicFiles);
       const ipcRenderer = window.ipcRenderer;
-      let filePath = file.path;
+      let filePath = null; // Don't pre-initialize with file.path - must explicitly set valid path
 
       if (file.source === 'tidal') {
         // --- TIDAL: Get stream URL and play with MPV ---
@@ -723,6 +723,126 @@ function App() {
         }
         showToast('Playing Tidal stream...', 'success');
         filePath = result.data.url; // Use the direct stream URL
+      } else {
+        // --- SMART PLAYBACK PRIORITY: Local → Cached → Stream ---
+        const storageType = file.storage_type || 'local';
+
+        if (storageType === 'local' || storageType === 'both') {
+          // Try local file first using IPC
+          const localExists = await ipcRenderer.invoke('check-file-exists', file.path);
+          if (localExists) {
+            filePath = file.path; // Local file exists
+          } else {
+            // Local file not found, try cache if available
+            if (file.cache_path) {
+              const cacheExists = await ipcRenderer.invoke('check-file-exists', file.cache_path);
+              if (cacheExists) {
+                filePath = file.cache_path;
+                showToast('Playing from cache', 'info');
+              } else {
+                // Cache not found either
+                if (file.telegram_message_id) {
+                  showToast('Streaming from Telegram...', 'info');
+                  const tempPath = await ipcRenderer.invoke('get-temp-path', `telecloud_${Date.now()}.flac`);
+                  const downloadResult = await ipcRenderer.invoke('telecloud-sync:download-track', {
+                    metadata: file,
+                    targetPath: tempPath
+                  });
+                  if (downloadResult.success) {
+                    filePath = tempPath;
+                    // Extract metadata and update database
+                    const metadataResult = await ipcRenderer.invoke('extract-and-cache-metadata', {
+                      tempFilePath: tempPath,
+                      originalPath: file.path
+                    });
+                    if (metadataResult.success) {
+                      file.cache_path = metadataResult.cache_path;
+                      file.metadata = { ...file.metadata, ...metadataResult.metadata };
+                      // Update library state to refresh UI and cover art
+                      setMusicFiles(prev => prev.map(f =>
+                        f.path === file.path ? { ...f, cache_path: metadataResult.cache_path, metadata: { ...f.metadata, ...metadataResult.metadata } } : f
+                      ));
+                    }
+                  } else {
+                    throw new Error('Failed to stream from Telegram');
+                  }
+                } else {
+                  throw new Error('File not found locally, in cache, or on cloud');
+                }
+              }
+            } else if (file.telegram_message_id) {
+              // No cache, try streaming
+              showToast('Streaming from Telegram...', 'info');
+              const tempPath = await ipcRenderer.invoke('get-temp-path', `telecloud_${Date.now()}.flac`);
+              const downloadResult = await ipcRenderer.invoke('telecloud-sync:download-track', {
+                metadata: file,
+                targetPath: tempPath
+              });
+              if (downloadResult.success) {
+                filePath = tempPath;
+                // Extract metadata and update database
+                const metadataResult = await ipcRenderer.invoke('extract-and-cache-metadata', {
+                  tempFilePath: tempPath,
+                  originalPath: file.path
+                });
+                if (metadataResult.success) {
+                  file.cache_path = metadataResult.cache_path;
+                  file.metadata = { ...file.metadata, ...metadataResult.metadata };
+                }
+              } else {
+                throw new Error('Failed to stream from Telegram');
+              }
+            }
+          }
+        } else if (storageType === 'cloud') {
+          // Cloud-only file: check cache first, then stream
+          if (file.cache_path) {
+            const cacheExists = await ipcRenderer.invoke('check-file-exists', file.cache_path);
+            if (cacheExists) {
+              filePath = file.cache_path;
+              showToast('Playing from cache', 'info');
+            } else {
+              // Download to cache and play
+              showToast('Downloading to cache...', 'info');
+              const downloadResult = await ipcRenderer.invoke('telecloud-sync:download-track', {
+                metadata: file,
+                targetPath: file.cache_path
+              });
+              if (downloadResult.success) {
+                filePath = file.cache_path;
+              } else {
+                throw new Error('Failed to download from Telegram');
+              }
+            }
+          } else {
+            // No cache path set, download to temp
+            showToast('Streaming from Telegram...', 'info');
+            const tempPath = await ipcRenderer.invoke('get-temp-path', `telecloud_${Date.now()}.flac`);
+            const downloadResult = await ipcRenderer.invoke('telecloud-sync:download-track', {
+              metadata: file,
+              targetPath: tempPath
+            });
+            if (downloadResult.success) {
+              filePath = tempPath;
+              // Extract metadata and update database
+              const metadataResult = await ipcRenderer.invoke('extract-and-cache-metadata', {
+                tempFilePath: tempPath,
+                originalPath: file.path
+              });
+              if (metadataResult.success) {
+                file.cache_path = metadataResult.cache_path;
+                file.metadata = { ...file.metadata, ...metadataResult.metadata };
+              }
+            } else {
+              throw new Error('Failed to stream from Telegram');
+            }
+          }
+        }
+      }
+
+      // --- Validate we have a valid path before playing ---
+      if (!filePath) {
+        throw new Error('Could not determine file path - file not available locally, in cache, or on cloud');
       }
 
       // --- Play with MPV (works for local files and URLs) ---
@@ -746,6 +866,7 @@ function App() {
       ipcRenderer.invoke('save-store', 'recent', newRecent);
     } catch (err) {
       console.error(err);
+      showToast(`Playback error: ${err.message}`, 'error');
     }
   };
 
@@ -840,8 +961,34 @@ function App() {
       const ipcRenderer = window.ipcRenderer;
       const success = await ipcRenderer.invoke('delete-song', file);
       if (success) {
+        // Remove from library
         setMusicFiles(prev => prev.filter(f => f.path !== file.path));
-        // Remove from playlists/favorites if needed, or rely on next refresh
+
+        // Remove from favorites if present
+        setFavorites(prev => {
+          const updated = prev.filter(f => f.path !== file.path);
+          if (updated.length !== prev.length) {
+            ipcRenderer.invoke('save-store', 'favorites', updated);
+          }
+          return updated;
+        });
+
+        // Remove from all playlists if present
+        setPlaylists(prev => {
+          const updated = prev.map(playlist => ({
+            ...playlist,
+            songs: playlist.songs.filter(s => s.path !== file.path)
+          }));
+          // Check if any playlist was modified
+          if (JSON.stringify(updated) !== JSON.stringify(prev)) {
+            ipcRenderer.invoke('save-store', 'playlists', updated);
+          }
+          return updated;
+        });
+
+        showToast('Song deleted successfully', 'success');
+      } else {
+        showToast('Failed to delete song', 'error');
       }
     }
   };
@@ -858,26 +1005,90 @@ function App() {
 
   const handleDownloadSong = async (file) => {
     const ipcRenderer = window.ipcRenderer;
-    const settings = await ipcRenderer.invoke('load-store', 'settings');
-    if (!settings || !settings.downloadFolder) {
-      alert('Please set a default Download Location in Settings first.');
-      setCurrentView('settings');
-      return;
+    const storageType = file.storage_type || 'local';
+
+    // --- CONTEXT-AWARE DOWNLOAD BEHAVIOR ---
+    if (storageType === 'local') {
+      // Local file: Backup to download folder
+      const settings = await ipcRenderer.invoke('load-store', 'settings');
+      if (!settings || !settings.downloadFolder) {
+        alert('Please set a default Download Location in Settings first.');
+        setCurrentView('settings');
+        return;
+      }
+      const toastId = Date.now() + Math.random();
+      setDownloadToasts(prev => [...prev, { id: toastId, name: file.metadata?.title || file.name, progress: 0 }]);
+
+      // Simulate download progress since local copy is instant
+      for (let i = 1; i <= 10; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        setDownloadToasts(prev => prev.map(t => t.id === toastId ? { ...t, progress: i * 10 } : t));
+      }
+
+      await ipcRenderer.invoke('download-song', file, settings.downloadFolder);
+
+      setTimeout(() => {
+        setDownloadToasts(prev => prev.filter(t => t.id !== toastId));
+      }, 3000);
+    } else if (storageType === 'cloud') {
+      // Cloud-only file: Download to cache for offline playback
+      if (!file.telegram_message_id) {
+        showToast('Cloud file not found', 'error');
+        return;
+      }
+
+      const cachePath = require('path').join(require('os').tmpdir(), 'telecloud_cache', `${Date.now()}_${require('path').basename(file.path)}`);
+
+      showToast('Downloading to cache...', 'info');
+      const result = await ipcRenderer.invoke('telecloud-sync:download-track', {
+        metadata: file,
+        targetPath: cachePath
+      });
+
+      if (result.success) {
+        // Update file metadata with cache path
+        file.cache_path = cachePath;
+        showToast('Downloaded to cache successfully', 'success');
+      } else {
+        showToast(`Download failed: ${result.error}`, 'error');
+      }
+    } else if (storageType === 'both') {
+      // File exists both locally and in cloud
+      if (file.cache_path) {
+        // Already cached - offer to manage cache
+        if (window.confirm('This file is already cached. Do you want to clear the cache?')) {
+          try {
+            await require('fs').promises.unlink(file.cache_path);
+            file.cache_path = null;
+            showToast('Cache cleared', 'success');
+          } catch (err) {
+            showToast(`Failed to clear cache: ${err.message}`, 'error');
+          }
+        }
+      } else {
+        // Not cached - offer to download to download folder as backup
+        const settings = await ipcRenderer.invoke('load-store', 'settings');
+        if (!settings || !settings.downloadFolder) {
+          alert('Please set a default Download Location in Settings first.');
+          setCurrentView('settings');
+          return;
+        }
+
+        const toastId = Date.now() + Math.random();
+        setDownloadToasts(prev => [...prev, { id: toastId, name: file.metadata?.title || file.name, progress: 0 }]);
+
+        for (let i = 1; i <= 10; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          setDownloadToasts(prev => prev.map(t => t.id === toastId ? { ...t, progress: i * 10 } : t));
+        }
+
+        await ipcRenderer.invoke('download-song', file, settings.downloadFolder);
+
+        setTimeout(() => {
+          setDownloadToasts(prev => prev.filter(t => t.id !== toastId));
+        }, 3000);
+      }
     }
-    const toastId = Date.now() + Math.random();
-    setDownloadToasts(prev => [...prev, { id: toastId, name: file.metadata?.title || file.name, progress: 0 }]);
-
-    // Simulate download progress since local copy is instant
-    for (let i = 1; i <= 10; i++) {
-      await new Promise(r => setTimeout(r, 100));
-      setDownloadToasts(prev => prev.map(t => t.id === toastId ? { ...t, progress: i * 10 } : t));
-    }
-
-    await ipcRenderer.invoke('download-song', file, settings.downloadFolder);
-
-    setTimeout(() => {
-      setDownloadToasts(prev => prev.filter(t => t.id !== toastId));
-    }, 3000); // Hide after 3 seconds
   };
 
   const handleTidalLoginSuccess = (session) => {

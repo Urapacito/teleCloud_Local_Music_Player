@@ -10,8 +10,8 @@ TeleCloud is a modern desktop music player that combines high-fidelity audio pla
 
 TeleCloud is an Electron-based music player that brings together:
 - **Hi-Fi Audio Playback** - Bit-perfect output for audiophiles
-- **Cloud Storage Integration** - Access your music via Telegram (coming soon)
-- **Streaming Services** - Native Tidal integration (Still working on this but basic version works)
+- **Cloud Storage via Telegram** - Upload, store, and stream your music library from Telegram channels
+- **Streaming Services** - Native Tidal integration (Still working on this but TIDAL not allow individual users to streaming full songs so you can do some basics there)
 - **Modern Interface** - Beautiful, intuitive design with light/dark themes
 
 Whether you're a casual listener or an audiophile with a collection of high-resolution FLAC files, TeleCloud provides the tools you need for the ultimate listening experience.
@@ -41,6 +41,9 @@ Whether you're a casual listener or an audiophile with a collection of high-reso
 
 ### Music Management
 - **Local Library** - Organize your music files with automatic metadata extraction
+- **TeleCloud Sync** - Upload your library to Telegram for cloud storage and access anywhere
+- **Cloud Playback** - Stream music from Telegram with automatic caching and metadata extraction
+- **Library Restore** - Restore your entire library from Telegram channels
 - **Playlists** - Create and manage unlimited playlists
 - **Favorites** - Quick access to your most-loved tracks
 - **Recent Played** - Never lose track of what you've been listening to
@@ -63,20 +66,15 @@ Whether you're a casual listener or an audiophile with a collection of high-reso
 - **Queue Management** - Full control over playback queue
 - **File Watcher** - Automatic library updates when files change
 - **Multiple Folders** - Scan and manage music from multiple locations
-- **Download to Library** - Save cloud tracks locally
+- **Hybrid Storage** - Files can exist locally, in cloud, or both
+- **Smart Caching** - Downloaded cloud files cached for instant subsequent playback
+- **Complete Metadata** - Cover art, lyrics, and technical specs for all files (local and cloud)
 
 ---
 
 ## Coming Soon
 
 I'm constantly improving TeleCloud. Here's what's on the roadmap:
-
-### Telegram Personal Cloud Storage
-- **Store Music in Telegram** - Upload your music library to Telegram chats/channels
-- **Stream from Telegram** - Access your music from anywhere without local storage
-- **Automatic Sync** - Keep your cloud library in sync with local files
-- **Private Channels** - Use your own private Telegram channels as storage
-- **Bandwidth Efficient** - Smart caching and progressive loading
 
 ### Additional Features
 - **Last.fm Scrobbling** - Track your listening history

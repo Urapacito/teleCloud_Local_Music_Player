@@ -71,7 +71,14 @@ const AlbumsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPl
   }, []);
 
   if (selectedAlbum) {
-    const currentAlbumSongs = selectedAlbum.songs;
+    // Sort songs by track number for proper album order
+    const currentAlbumSongs = [...selectedAlbum.songs].sort((a, b) => {
+      const trackA = a.metadata?.track || 0;
+      const trackB = b.metadata?.track || 0;
+      if (trackA !== trackB) return trackA - trackB;
+      // Fallback to filename sorting if track numbers are equal
+      return a.name.localeCompare(b.name);
+    });
     return (
       <div style={{ display: 'flex', flex: 1, flexDirection: 'column', padding: '0 20px', paddingTop: '20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: '30px', gap: '20px' }}>

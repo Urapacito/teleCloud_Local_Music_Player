@@ -17,7 +17,8 @@ const COVER_CACHE_DIR = path.join(app.getPath('userData'), 'cover-cache');
 const tidal = require('./tidal.js');
 require('./telegram.js');
 const MusicFolderWatcher = require('./watcher.js');
-const { setupTeleCloudSyncHandlers, cleanupTeleCloudSync } = require('./telegramSync.js');
+const { setupTeleCloudSyncHandlers, cleanupTeleCloudSync } = require('./telegramSync');
+const database = require('./database');
 
 // File system watcher instance
 let folderWatcher = null;
@@ -26,6 +27,21 @@ require('./music.js');
 require('./player.js');
 
 const isDev = !app.isPackaged;
+
+// Utility IPC Handlers for Cloud Playback
+ipcMain.handle('check-file-exists', async (event, filePath) => {
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('get-temp-path', async (event, filename) => {
+  const os = require('os');
+  return path.join(os.tmpdir(), filename);
+});
 
 // Tidal IPC Handlers
 ipcMain.handle('tidal:login', async () => {
@@ -531,6 +547,7 @@ app.whenReady().then(async () => {
   }
 
   // Setup TeleCloud Sync IPC handlers
+  console.log('[DEBUG] What is actually imported?:', require('./telegramSync'));
   setupTeleCloudSyncHandlers();
 
   // Register media:// protocol for on-demand cover art loading
@@ -551,9 +568,25 @@ app.whenReady().then(async () => {
         });
       }
 
+      // Smart path resolution: Check database for cache_path (temp file location)
+      let actualFilePath = songPath;
+      const dbFile = database.getFileByPath(songPath);
+      if (dbFile && dbFile.cache_path && fs.existsSync(dbFile.cache_path)) {
+        actualFilePath = dbFile.cache_path;
+        console.log(`[media://] Using cache_path for cover: ${dbFile.cache_path}`);
+      } else if (!fs.existsSync(songPath)) {
+        // For cloud-only files, this is expected - cover will appear after first play
+        if (dbFile && (dbFile.storage_type === 'cloud' || dbFile.telegram_message_id)) {
+          // Silent return for cloud files - this is normal behavior
+          return new Response('', { status: 404 });
+        }
+        console.log(`[media://] File not found: ${songPath}`);
+        return new Response('', { status: 404 });
+      }
+
       // Extract from file
       const mm = await import('music-metadata');
-      const metadata = await mm.parseFile(songPath, { duration: false, skipCovers: false, skipPostHeaders: true });
+      const metadata = await mm.parseFile(actualFilePath, { duration: false, skipCovers: false, skipPostHeaders: true });
       const cover = mm.selectCover(metadata.common.picture);
 
       if (cover) {

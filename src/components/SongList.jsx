@@ -280,6 +280,17 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
             }
           }
 
+          // Storage type indicator
+          const storageType = file.storage_type || 'local';
+          let storageIcon = '';
+          if (storageType === 'cloud') {
+            storageIcon = '☁️';
+          } else if (storageType === 'both' || file.cache_path) {
+            storageIcon = '📥';
+          } else if (storageType === 'local') {
+            storageIcon = '🎵';
+          }
+
           return (
             <div
               key={file.path}
@@ -287,13 +298,14 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
               onClick={() => onPlay(file, idx, sortedMusicFiles)}
             >
               <div className="song-number">
-                {String(idx + 1).padStart(2, '0')}
+                {file.metadata?.track ? String(file.metadata.track).padStart(2, '0') : String(idx + 1).padStart(2, '0')}
               </div>
               <div className="song-play-btn">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="white"><path d="M8 5v14l11-7z" /></svg>
               </div>
 
               <img
+                key={file.path + (file.cache_path || '')}
                 src={file.path ? `media://${encodeURIComponent(file.path)}` : (file.cover || 'data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2250%22 height=%2250%22 viewBox=%220 0 50 50%22%3E%3Crect width=%2250%22 height=%2250%22 fill=%22%23333%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-size=%2220%22 fill=%22%23888%22%3E%E2%99%AB%3C/text%3E%3C/svg%3E')}
                 alt="cover"
                 loading="lazy"
@@ -301,7 +313,10 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
               />
 
               <div className="song-info">
-                <p className="song-title">{file.metadata?.title || file.name}</p>
+                <p className="song-title">
+                  {storageIcon && <span style={{ marginRight: '6px', fontSize: '14px' }}>{storageIcon}</span>}
+                  {file.metadata?.title || file.name}
+                </p>
                 <p className="song-artist">
                   {file.metadata?.artist || 'Unknown'}
                   <br />

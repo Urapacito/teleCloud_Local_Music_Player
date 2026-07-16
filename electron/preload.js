@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer, shell } = require('electron');
 contextBridge.exposeInMainWorld('ipcRenderer', {
     invoke: (...args) => ipcRenderer.invoke(...args),
     on: (...args) => ipcRenderer.on(...args),
+    off: (...args) => ipcRenderer.off(...args),
+    removeListener: (...args) => ipcRenderer.removeListener(...args),
     removeAllListeners: (...args) => ipcRenderer.removeAllListeners(...args),
 });
 

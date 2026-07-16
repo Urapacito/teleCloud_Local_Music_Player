@@ -29,6 +29,13 @@ const TeleCloudSyncSettings = () => {
     const [storageUsed, setStorageUsed] = useState(0);
     const [storageLimit, setStorageLimit] = useState(2048); // MB
 
+    // Sync Progress State
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [showProgress, setShowProgress] = useState(false);
+    const [currentFile, setCurrentFile] = useState('');
+    const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0 });
+    const [uploadProgress, setUploadProgress] = useState(0);
+
     // Error State
     const [error, setError] = useState('');
 
@@ -38,6 +45,28 @@ const TeleCloudSyncSettings = () => {
     // Check if already connected on mount
     useEffect(() => {
         checkConnection();
+
+        // Listen for sync progress events
+        const handleProgress = (event, data) => {
+            setCurrentFile(data.currentFile);
+            setSyncProgress({ current: data.current, total: data.total });
+            setUploadProgress(data.uploadProgress || 0);
+        };
+
+        const handleStopped = () => {
+            setIsLoading(false);
+            setShowProgress(false);
+            alert('Sync stopped by user');
+        };
+
+        window.ipcRenderer.on('telecloud-sync:progress', handleProgress);
+        window.ipcRenderer.on('telecloud-sync:stopped', handleStopped);
+
+        // Cleanup listeners on unmount
+        return () => {
+            window.ipcRenderer.off('telecloud-sync:progress', handleProgress);
+            window.ipcRenderer.off('telecloud-sync:stopped', handleStopped);
+        };
     }, []);
 
     const checkConnection = async () => {
@@ -50,6 +79,14 @@ const TeleCloudSyncSettings = () => {
                 setLastSync(result.lastSync);
                 setSyncedItems(result.syncedItems || 0);
                 setStorageUsed(result.storageUsed || 0);
+                // Restore storage limit based on storage location
+                setStorageLimit(result.storageLocation === 'private_channel' ? Infinity : 2048);
+
+                // Check if sync is in progress
+                const syncStatus = await window.ipcRenderer.invoke('telecloud-sync:check-sync-status');
+                if (syncStatus && syncStatus.isSyncing) {
+                    setIsLoading(true);
+                }
             }
         } catch (err) {
             console.error('Error checking connection:', err);
@@ -195,16 +232,80 @@ const TeleCloudSyncSettings = () => {
 
     const handleSyncNow = async () => {
         setIsLoading(true);
+        setShowProgress(true);
         try {
             const result = await window.ipcRenderer.invoke('telecloud-sync:sync-now');
             if (result.success) {
                 setLastSync(new Date().toISOString());
                 alert('Sync completed successfully!');
+                // Refresh stats
+                checkConnection();
             } else {
                 alert('Sync failed: ' + (result.error || 'Unknown error'));
             }
         } catch (err) {
             alert('Sync failed: ' + err.message);
+        } finally {
+            setIsLoading(false);
+            setShowProgress(false);
+        }
+    };
+
+    const handleStopSync = async () => {
+        if (!window.confirm('Stop sync operation?\n\nThis will:\n- Stop uploading current and remaining files\n- Keep already synced files in cloud\n- You can resume later\n\nAre you sure?')) {
+            return;
+        }
+
+        try {
+            const result = await window.ipcRenderer.invoke('telecloud-sync:stop-sync');
+            if (result.success) {
+                console.log('Sync stop requested');
+            } else {
+                alert('Failed to stop sync: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            alert('Failed to stop sync: ' + err.message);
+        }
+    };
+
+    const handleDeleteAll = async () => {
+        if (!window.confirm('⚠️ Delete ALL files from Telegram channel?\n\nThis will:\n- Delete all messages in the channel\n- Clear sync state from database\n- Cannot be undone\n\nAre you sure?')) {
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const result = await window.ipcRenderer.invoke('telecloud-sync:delete-all');
+            if (result.success) {
+                alert(`✓ Deleted ${result.deletedCount} files from Telegram and cleared sync state`);
+                // Refresh stats
+                checkConnection();
+            } else {
+                alert('Delete failed: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            alert('Delete failed: ' + err.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleRestoreFromCloud = async () => {
+        if (!window.confirm('Restore library from TeleCloud?\n\nThis will add all cloud tracks to your local library. It will not download audio files.')) {
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const result = await window.ipcRenderer.invoke('telecloud-sync:restore-from-cloud');
+            if (result.success) {
+                alert(`✓ Restored ${result.restoredCount} tracks from the cloud. Skipped ${result.skippedCount} duplicates.`);
+                checkConnection(); // Refresh stats
+            } else {
+                alert('Restore failed: ' + (result.error || 'Unknown error'));
+            }
+        } catch (err) {
+            alert('Restore failed: ' + err.message);
         } finally {
             setIsLoading(false);
         }
@@ -833,7 +934,7 @@ const TeleCloudSyncSettings = () => {
                         </div>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '12px' }}>
+                    <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
                         <button
                             onClick={handleSyncNow}
                             disabled={isLoading}
@@ -869,6 +970,112 @@ const TeleCloudSyncSettings = () => {
                             Disconnect
                         </button>
                     </div>
+
+                    {/* Sync Progress Section (Expandable) */}
+                    {isLoading && (
+                        <div style={{ marginTop: '16px', background: 'var(--bg-main)', borderRadius: '10px', padding: '16px', border: '1px solid var(--bg-tertiary)' }}>
+                            <div
+                                onClick={() => setShowProgress(!showProgress)}
+                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: showProgress ? '16px' : '0' }}
+                            >
+                                <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--text-main)' }}>
+                                    Sync in Progress
+                                </div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    {showProgress ? '▼' : '▶'} {showProgress ? 'Hide' : 'Show'} Details
+                                </div>
+                            </div>
+
+                            {showProgress && (
+                                <>
+                                    <div style={{ marginBottom: '16px' }}>
+                                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                            Current File:
+                                        </div>
+                                        <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {currentFile || 'Preparing...'}
+                                        </div>
+                                    </div>
+
+                                    <div style={{ marginBottom: '16px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                                            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Progress</span>
+                                            <span style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: 'bold' }}>
+                                                {syncProgress.current} / {syncProgress.total} tracks
+                                            </span>
+                                        </div>
+                                        <div style={{ width: '100%', height: '8px', background: 'var(--bg-tertiary)', borderRadius: '4px', overflow: 'hidden' }}>
+                                            <div style={{
+                                                height: '100%',
+                                                width: `${uploadProgress > 0 ? uploadProgress : (syncProgress.total > 0 ? (syncProgress.current / syncProgress.total) * 100 : 0)}%`,
+                                                background: 'linear-gradient(90deg, #10b981 0%, #34d399 100%)',
+                                                transition: 'width 0.3s ease'
+                                            }}></div>
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={handleStopSync}
+                                        style={{
+                                            width: '100%',
+                                            background: 'transparent',
+                                            color: '#ef4444',
+                                            border: '2px solid #ef4444',
+                                            padding: '10px',
+                                            borderRadius: '8px',
+                                            fontSize: '14px',
+                                            fontWeight: 'bold',
+                                            cursor: 'pointer'
+                                        }}
+                                    >
+                                        ⏹ Stop Sync
+                                    </button>
+                                </>
+                            )}
+                        </div>
+                    )}
+
+                    <button
+                        onClick={handleDeleteAll}
+                        disabled={isLoading}
+                        style={{
+                            width: '100%',
+                            background: 'transparent',
+                            color: '#f59e0b',
+                            border: '2px solid #f59e0b',
+                            padding: '12px',
+                            borderRadius: '10px',
+                            fontSize: '14px',
+                            fontWeight: 'bold',
+                            cursor: isLoading ? 'not-allowed' : 'pointer'
+                        }}
+                    >
+                        Delete All from Channel (Testing)
+                    </button>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', borderRadius: '16px', padding: '32px', border: '1px solid var(--bg-tertiary)', marginBottom: '24px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '16px' }}>Cloud Recovery</h3>
+                    <button
+                        onClick={handleRestoreFromCloud}
+                        disabled={isLoading}
+                        style={{
+                            width: '100%',
+                            background: 'transparent',
+                            color: '#34d399',
+                            border: '2px solid #34d399',
+                            padding: '12px',
+                            borderRadius: '10px',
+                            fontSize: '14px',
+                            fontWeight: 'bold',
+                            cursor: isLoading ? 'not-allowed' : 'pointer'
+                        }}
+                    >
+                        Restore Library from Cloud
+                    </button>
+                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '12px', textAlign: 'center' }}>
+                        Use this on a new PC to repopulate your library from the cloud.
+                    </p>
                 </div>
 
                 <div style={{ background: 'var(--bg-secondary)', borderRadius: '16px', padding: '32px', border: '1px solid var(--bg-tertiary)' }}>

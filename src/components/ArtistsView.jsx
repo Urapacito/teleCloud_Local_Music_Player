@@ -49,7 +49,7 @@ const ArtistsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddP
 
   if (selectedArtist) {
     return (
-      <div style={{ display: 'flex', flex: 1, flexDirection: 'column', padding: '0 20px', paddingTop: '20px' }}>
+      <div style={{ display: 'flex', flex: 1, flexDirection: 'column', padding: '0 20px', paddingTop: '20px', minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: '20px', gap: '15px' }}>
           <button
             onClick={() => setSelectedArtist(null)}
@@ -61,7 +61,7 @@ const ArtistsView = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddP
           <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>{selectedArtist.songs.length} songs</span>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
           <SongList
             musicFiles={selectedArtist.songs}
             currentFile={currentFile}

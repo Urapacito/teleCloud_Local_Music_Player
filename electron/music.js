@@ -219,11 +219,12 @@ async function scanWithDatabaseCache(folders, progressCallback) {
       // Cover extraction removed - using media:// protocol for on-demand loading
       const hasCover = !!(parsed.common.picture && parsed.common.picture.length > 0);
 
-      // 🔍 DEBUG: Log bit depth extraction
+      // 🔍 DEBUG: Log bit depth and lyrics extraction
       console.log(`[Scan] Parsing: ${fileInfo.name}`);
+      console.log(`[Scan]   Track Number: ${parsed.common.track?.no}`);
+      console.log(`[Scan]   Lyrics Found: ${lyricsStr ? `YES (${lyricsStr.length} chars)` : 'NO'}`);
       console.log(`[Scan]   Bit Depth: ${parsed.format.bitsPerSample}`);
       console.log(`[Scan]   Sample Rate: ${parsed.format.sampleRate}`);
-      console.log(`[Scan]   Format Object Keys:`, Object.keys(parsed.format));
 
       // Store in database
       const dbData = {
@@ -705,6 +706,7 @@ ipcMain.handle('load-library', async () => {
         album: f.album,
         year: f.year,
         genre: f.genre,
+        track: f.track_number || 0,
         duration: f.duration,
         bitrate: f.bitrate,
         sampleRate: f.sample_rate,
@@ -712,7 +714,14 @@ ipcMain.handle('load-library', async () => {
         lyrics: f.lyrics || ''
       },
       cover: f.cover,
-      hasCover: f.hasCover
+      hasCover: f.hasCover,
+      // TeleCloud Sync fields
+      storage_type: f.storage_type || 'local',
+      telegram_message_id: f.telegram_message_id,
+      telegram_channel_id: f.telegram_channel_id,
+      cache_path: f.cache_path,
+      cloud_checksum: f.cloud_checksum,
+      last_synced_at: f.last_synced_at
     }));
   } catch (err) {
     console.error('Error loading library from database:', err);
@@ -735,7 +744,7 @@ ipcMain.handle('save-library', async (event, libraryData) => {
       album: f.metadata?.album || 'Unknown Album',
       year: f.metadata?.year || null,
       genre: f.metadata?.genre || null,
-      trackNumber: f.metadata?.trackNumber || null,
+      trackNumber: f.metadata?.track || null,
       discNumber: f.metadata?.discNumber || null,
       duration: f.metadata?.duration || 0,
       bitrate: f.metadata?.bitrate || 0,
@@ -791,11 +800,25 @@ ipcMain.handle('save-store', async (event, storeName, data) => {
 
 ipcMain.handle('delete-song', async (event, file) => {
   try {
-    if (fs.existsSync(file.path)) {
-      fs.unlinkSync(file.path);
+    const storageType = file.storage_type || 'local';
+
+    // If file exists locally, delete it from disk
+    if (storageType === 'local' || storageType === 'both') {
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+        console.log(`[Delete] Removed file from disk: ${file.path}`);
+      }
     }
-    // Telegram deletion would go here if file.messageId exists
-    // if (file.messageId) { await deleteFromTelegram(file.messageId); }
+
+    // Always remove from database (for cloud-only files, this is the only cleanup needed)
+    database.deleteFile(file.path);
+    console.log(`[Delete] Removed from database: ${file.path}`);
+
+    // TODO: Optionally delete from Telegram channel
+    // if (file.telegram_message_id && file.telegram_channel_id) {
+    //   await deleteFromTelegram(file.telegram_message_id, file.telegram_channel_id);
+    // }
+
     return true;
   } catch (err) {
     console.error('Error deleting song:', err);
@@ -814,5 +837,134 @@ ipcMain.handle('download-song', async (event, file, downloadFolder) => {
   } catch (err) {
     console.error('Error downloading song:', err);
     return false;
+  }
+});
+
+// Extract metadata from downloaded temp file and update database
+ipcMain.handle('extract-and-cache-metadata', async (event, { tempFilePath, originalPath }) => {
+  try {
+    console.log(`[Metadata] Extracting metadata from temp file: ${tempFilePath}`);
+
+    if (!fs.existsSync(tempFilePath)) {
+      throw new Error('Temp file not found');
+    }
+
+    // Parse metadata from the downloaded file
+    const mm = await import('music-metadata');
+    const parsed = await mm.parseFile(tempFilePath, { duration: true, skipCovers: false });
+
+    // Extract lyrics (same logic as local file scanning)
+    let lyricsStr = '';
+    if (parsed.common.lyrics && parsed.common.lyrics.length > 0) {
+      lyricsStr = parsed.common.lyrics.map(l => {
+        if (typeof l === 'string') return l;
+        if (l && l.syncText) {
+          return l.syncText.map(t => {
+            const min = Math.floor(t.timestamp / 1000 / 60).toString().padStart(2, '0');
+            const sec = ((t.timestamp / 1000) % 60).toFixed(2).padStart(5, '0');
+            return `[${min}:${sec}]${t.text}`;
+          }).join('\n');
+        }
+        if (l && l.text) return l.text;
+        return JSON.stringify(l);
+      }).join('\n');
+    }
+
+    // Check native tags for UNSYNCEDLYRICS, UNSYNCED LYRICS, USLT
+    if (!lyricsStr && parsed.native) {
+      for (const tagType in parsed.native) {
+        const tags = parsed.native[tagType];
+        for (const tag of tags) {
+          if (tag.id && (
+            tag.id.toUpperCase() === 'UNSYNCEDLYRICS' ||
+            tag.id.toUpperCase() === 'UNSYNCED LYRICS' ||
+            tag.id.toUpperCase() === 'USLT' ||
+            tag.id.toUpperCase() === 'LYRICS'
+          )) {
+            if (typeof tag.value === 'string') {
+              lyricsStr = tag.value;
+              break;
+            } else if (tag.value && tag.value.text) {
+              lyricsStr = tag.value.text;
+              break;
+            }
+          }
+        }
+        if (lyricsStr) break;
+      }
+    }
+
+    // Extract complete metadata
+    const metadata = {
+      bitrate: parsed.format.bitrate || 0,
+      sampleRate: parsed.format.sampleRate || 0,
+      bitsPerSample: parsed.format.bitsPerSample || 0,
+      duration: parsed.format.duration || 0,
+      title: parsed.common.title || path.basename(originalPath),
+      artist: parsed.common.artist || 'Unknown Artist',
+      album: parsed.common.album || 'Unknown Album',
+      lyrics: lyricsStr
+    };
+
+    console.log(`[Metadata] Extracted: ${metadata.bitsPerSample}-bit / ${metadata.sampleRate}Hz / ${Math.round(metadata.bitrate / 1000)}kbps`);
+    if (lyricsStr) {
+      console.log(`[Metadata] Found lyrics (${lyricsStr.length} characters)`);
+    }
+
+    // Update database with cache_path and complete metadata
+    const dbFile = database.getFileByPath(originalPath);
+    if (dbFile) {
+      // Update existing record with cache path and metadata
+      database.insertOrUpdateFile({
+        path: originalPath,
+        mtime: dbFile.mtime || Date.now(),
+        size: dbFile.size || 0,
+        title: metadata.title,
+        artist: metadata.artist,
+        album: metadata.album,
+        year: dbFile.year,
+        genre: dbFile.genre,
+        trackNumber: dbFile.track_number,
+        discNumber: dbFile.disc_number,
+        duration: metadata.duration,
+        bitrate: metadata.bitrate,
+        sampleRate: metadata.sampleRate,
+        bitDepth: metadata.bitsPerSample,
+        lyrics: metadata.lyrics || '',
+        cover: null,
+        hasCover: !!(parsed.common.picture && parsed.common.picture.length > 0)
+      });
+
+      // Update cloud metadata with cache_path
+      database.updateCloudMetadata(originalPath, {
+        storage_type: dbFile.storage_type,
+        telegram_message_id: dbFile.telegram_message_id,
+        telegram_channel_id: dbFile.telegram_channel_id,
+        cloud_checksum: dbFile.cloud_checksum,
+        last_synced_at: dbFile.last_synced_at,
+        cache_path: tempFilePath
+      });
+
+      console.log(`[Metadata] Updated database for: ${originalPath}`);
+    }
+
+    // Return frontend-formatted metadata
+    return {
+      success: true,
+      metadata: {
+        title: metadata.title,
+        artist: metadata.artist,
+        album: metadata.album,
+        duration: metadata.duration,
+        bitrate: metadata.bitrate,
+        sampleRate: metadata.sampleRate,
+        bitsPerSample: metadata.bitsPerSample,
+        lyrics: metadata.lyrics || ''
+      },
+      cache_path: tempFilePath
+    };
+  } catch (err) {
+    console.error('[Metadata] Error extracting metadata:', err);
+    return { success: false, error: err.message };
   }
 });
