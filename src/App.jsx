@@ -19,9 +19,11 @@ import SettingsView from './components/SettingsView';
 import EqSettingsView from './components/EqSettingsView';
 import TidalLogin from './components/TidalLogin';
 import TidalView from './components/TidalView';
+import Modal from './components/Modal'; // Import the new Modal component
 import { STANDARD_FREQUENCIES, DEFAULT_Q, buildFfmpegEqString } from './utils/autoEqMath';
 
 function App() {
+  const [isInfoModalOpen, setIsInfoModalOpen] = useState(false); // State for the new modal
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const handleTrackEndedRef = useRef(null); // Stable ref to handleTrackEnded to avoid stale closures
   const tidalPlayerEventsRef = useRef(null);
@@ -376,11 +378,6 @@ function App() {
       const ipcRenderer = window.ipcRenderer;
       ipcRenderer.invoke('get-audio-devices').then(devs => setDevices(devs));
 
-      // Listen for time position updates from the MPV player
-      ipcRenderer.on('time-pos', (event, position) => {
-        setCurrentTime(position);
-      });
-
       ipcRenderer.invoke('load-library').then(savedFiles => {
         if (savedFiles && savedFiles.length > 0) {
           setMusicFiles(savedFiles);
@@ -388,110 +385,90 @@ function App() {
       });
       ipcRenderer.invoke('load-store', 'favorites').then(data => setFavorites(data || []));
       ipcRenderer.invoke('load-store', 'recent').then(data => {
-        // Filter recent played to only include files that still exist in library
         const recent = data || [];
         setRecentPlayed(recent);
       });
       ipcRenderer.invoke('load-store', 'playlists').then(data => setPlaylists(data || []));
 
-      ipcRenderer.on('track-ended', () => {
-        handleTrackEndedRef.current?.();
-      });
+      const handleTimePos = (event, position) => setCurrentTime(position);
+      const handleTrackEnded = () => handleTrackEndedRef.current?.();
 
-      // Listen for scan progress events
-      ipcRenderer.on('scan-progress', (event, progress) => {
-        if (progress.stage === 'indexing') {
-          setScanProgress({
-            type: 'scanning',
-            status: 'inProgress',
-            message: progress.message || 'Indexing files...'
-          });
-        } else if (progress.stage === 'parsing') {
-          setScanProgress({
-            type: 'scanning',
-            status: 'inProgress',
-            message: progress.message || `Parsing metadata (${progress.current}/${progress.total})...`
-          });
-        } else if (progress.stage === 'complete') {
-          setScanProgress({
-            type: 'scanning',
-            status: 'done',
-            message: progress.message || 'Scan complete!'
-          });
-          setTimeout(() => setScanProgress(null), 3000);
-        }
-      });
-
-      // Listen for incremental metadata fetch progress
-      const metadataUpdates = new Map();
-      let saveTimeout = null;
-
-      ipcRenderer.on('metadata-fetch-progress', (event, data) => {
-        const { file, current, total } = data;
-
-        // Update UI immediately
-        setMusicFiles(prevFiles => {
-          return prevFiles.map(f => {
-            if (f.path === file.path) {
-              return {
-                ...f,
-                cover: file.cover || f.cover,
-                metadata: {
-                  ...f.metadata,
-                  lyrics: file.lyrics || f.metadata?.lyrics || ''
-                }
-              };
-            }
-            return f;
-          });
-        });
-
-        // Store update in memory
-        metadataUpdates.set(file.path, file);
-
-        // Debounce disk writes - only save every 2 seconds or when complete
-        if (saveTimeout) clearTimeout(saveTimeout);
-
-        if (current === total) {
-          // Last file - save immediately
-          saveBatchedMetadata();
-        } else {
-          // Batch save after 2 seconds of inactivity
-          saveTimeout = setTimeout(saveBatchedMetadata, 2000);
-        }
-      });
-
-      async function saveBatchedMetadata() {
-        if (metadataUpdates.size === 0) return;
-
-        const lib = await ipcRenderer.invoke('load-library');
-        const updatedLib = lib.map(libFile => {
-          const update = metadataUpdates.get(libFile.path);
-          if (update) {
-            return {
-              ...libFile,
-              cover: update.cover || libFile.cover,
-              metadata: {
-                ...libFile.metadata,
-                lyrics: update.lyrics || libFile.metadata?.lyrics || ''
-              }
-            };
-          }
-          return libFile;
-        });
-
-        await ipcRenderer.invoke('save-library', updatedLib);
-        metadataUpdates.clear();
-      }
+      ipcRenderer.on('time-pos', handleTimePos);
+      ipcRenderer.on('track-ended', handleTrackEnded);
 
       return () => {
-        ipcRenderer.removeAllListeners('track-ended');
         ipcRenderer.removeAllListeners('time-pos');
-        ipcRenderer.removeAllListeners('scan-progress');
-        ipcRenderer.removeAllListeners('metadata-fetch-progress');
+        ipcRenderer.removeAllListeners('track-ended');
       };
     }
-  }, [isAuthenticated, currentFile, musicFiles, loopMode, isShuffle]);
+  }, [isAuthenticated]); // This hook now only runs once on auth change
+
+  // Separated effect for scan progress to avoid re-registering other listeners
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const ipcRenderer = window.ipcRenderer;
+
+    const handleScanProgress = (event, progress) => {
+      if (progress.stage === 'indexing') {
+        setScanProgress({ type: 'scanning', status: 'inProgress', message: progress.message || 'Indexing files...' });
+      } else if (progress.stage === 'parsing') {
+        setScanProgress({ type: 'scanning', status: 'inProgress', message: progress.message || `Parsing metadata (${progress.current}/${progress.total})...` });
+      } else if (progress.stage === 'complete') {
+        setScanProgress({ type: 'scanning', status: 'done', message: progress.message || 'Scan complete!' });
+        setTimeout(() => setScanProgress(null), 3000);
+      }
+    };
+
+    ipcRenderer.on('scan-progress', handleScanProgress);
+    return () => ipcRenderer.removeAllListeners('scan-progress');
+  }, [isAuthenticated]);
+
+  // Separated effect for metadata fetching to fix the infinite loop
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const ipcRenderer = window.ipcRenderer;
+    const metadataUpdates = new Map();
+    let saveTimeout = null;
+
+    const handleMetadataFetch = (event, data) => {
+      const { file } = data;
+      // Update UI immediately
+      setMusicFiles(prevFiles => prevFiles.map(f =>
+        f.path === file.path ? {
+          ...f,
+          cover: file.cover || f.cover,
+          metadata: { ...f.metadata, lyrics: file.lyrics || f.metadata?.lyrics || '' }
+        } : f
+      ));
+      // Store update for batch save
+      metadataUpdates.set(file.path, file);
+      // Debounce disk writes
+      if (saveTimeout) clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(saveBatchedMetadata, 2500);
+    };
+
+    async function saveBatchedMetadata() {
+      if (metadataUpdates.size === 0) return;
+
+      console.log(`[Database] Batch saving metadata for ${metadataUpdates.size} files.`);
+      const filesToUpdate = Array.from(metadataUpdates.values());
+      // Important: Clear the map *before* the async operation to prevent race conditions
+      metadataUpdates.clear();
+
+      await ipcRenderer.invoke('update-metadata-batch', filesToUpdate);
+      console.log(`[Database] Batch save complete.`);
+    }
+
+    ipcRenderer.on('metadata-fetch-progress', handleMetadataFetch);
+
+    return () => {
+      // On cleanup, ensure any pending updates are saved
+      if (metadataUpdates.size > 0) {
+        saveBatchedMetadata();
+      }
+      ipcRenderer.removeAllListeners('metadata-fetch-progress');
+    };
+  }, [isAuthenticated]); // This hook now only depends on authentication status
 
   // Filter recentPlayed to only include files that exist in current library
   useEffect(() => {
@@ -1191,6 +1168,51 @@ function App() {
           }
         `}
       </style>
+      <Modal
+        isOpen={isInfoModalOpen}
+        onClose={() => setIsInfoModalOpen(false)}
+        title="File Status Icons Explained"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '30px', padding: '10px' }}>
+          
+          <div style={{ display: 'flex', gap: '20px' }}>
+            <span style={{ color: 'var(--accent-red)', fontSize: '28px', flexShrink: 0, marginTop: '2px' }}>
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V3h-3z" /></svg>
+            </span>
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--text-main)', marginBottom: '5px' }}>Local</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                This song resides permanently on your computer's local hard drive. It will play instantly without buffering and requires no internet connection.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '20px' }}>
+            <span style={{ color: 'var(--accent-red)', fontSize: '28px', flexShrink: 0, marginTop: '2px' }}>
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" /></svg>
+            </span>
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--text-main)', marginBottom: '5px' }}>Cloud</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                This song is saved exclusively in your TeleCloud account. It requires an active internet connection to stream and may buffer briefly before playback.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '20px' }}>
+            <span style={{ color: 'var(--accent-red)', fontSize: '28px', flexShrink: 0, marginTop: '2px' }}>
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><path d="M12 2l-5.5 9h11L12 2zm0 3.84L13.93 9h-3.86L12 5.84zM17.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5zM6.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" /></svg>
+            </span>
+            <div>
+              <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--text-main)', marginBottom: '5px' }}>Hybrid (Cached)</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                A Cloud song that has been temporarily downloaded and cached on your device. It plays instantly like a Local song and will remain offline until the cache is cleared.
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </Modal>
       <Sidebar
         isCollapsed={isSidebarCollapsed}
         onToggle={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
@@ -1308,6 +1330,7 @@ function App() {
                 favorites={favorites}
                 onCheckSpectrum={setSpectrumFile}
                 title="Your Music"
+                onInfoClick={() => setIsInfoModalOpen(true)}
                 showSort={true}
               />
             </div>

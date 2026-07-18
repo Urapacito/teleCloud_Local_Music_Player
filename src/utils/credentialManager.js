@@ -85,7 +85,8 @@ class CredentialManager {
             channelId: credentials.channelId || null,
             playbackMode: credentials.playbackMode || 'stream',
             cacheLimit: credentials.cacheLimit || 50,
-            lastSync: credentials.lastSync || null
+            lastSync: credentials.lastSync || null,
+            musicFolders: credentials.musicFolders || [] // FIX: Save music folders
         };
 
         this.store.set('teleCloudSync', encrypted);
@@ -110,7 +111,8 @@ class CredentialManager {
             channelId: encrypted.channelId || null,
             playbackMode: encrypted.playbackMode || 'stream',
             cacheLimit: encrypted.cacheLimit || 50,
-            lastSync: encrypted.lastSync || null
+            lastSync: encrypted.lastSync || null,
+            musicFolders: encrypted.musicFolders || [] // FIX: Retrieve music folders
         };
     }
 

@@ -277,6 +277,17 @@ ipcMain.handle('apply-audio-settings', async (event, settings) => {
   }
 });
 
+// Database batch update handler
+ipcMain.handle('update-metadata-batch', async (event, files) => {
+  try {
+    database.updateMetadataBatch(files);
+    return { success: true };
+  } catch (error) {
+    console.error('[Main] Error batch updating metadata:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 // File System Watcher Handlers
 ipcMain.handle('start-watching', async (event, folders) => {
   try {

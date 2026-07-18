@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 
-const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlaylist, onCheckSpectrum, onDeleteSong, onDownloadSong, favorites = [], title, showSort = false }) => {
+const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlaylist, onCheckSpectrum, onDeleteSong, onDownloadSong, favorites = [], title, showSort = false, onInfoClick }) => {
   const [menuOpenIdx, setMenuOpenIdx] = useState(null);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [sortOption, setSortOption] = useState(showSort ? 'latest' : 'default');
@@ -184,7 +184,12 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
       <div className="song-list-container" style={{ height: '100%', overflowY: 'auto', paddingBottom: '80px' }}>
         {title && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', paddingRight: '20px' }}>
-            <h2 style={{ color: 'var(--text-main)', margin: 0, fontSize: '24px' }}>{title}</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <h2 style={{ color: 'var(--text-main)', margin: 0, fontSize: '24px' }}>{title}</h2>
+              {onInfoClick && (
+                <svg onClick={onInfoClick} style={{ cursor: 'pointer' }} viewBox="0 0 24 24" width="20" height="20" fill="var(--text-muted)"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 15c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1s1 .45 1 1v4c0 .55-.45 1-1 1zm1-8h-2V7h2v2z" /></svg>
+              )}
+            </div>
             {showSort && (
               <div style={{ position: 'relative' }}>
                 <div
@@ -282,13 +287,13 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
 
           // Storage type indicator
           const storageType = file.storage_type || 'local';
-          let storageIcon = '';
+          let storageIcon = null;
           if (storageType === 'cloud') {
-            storageIcon = '☁️';
+            storageIcon = <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 18H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l1.07-.11.5-.95C8.08 7.14 9.94 6 12 6c2.62 0 4.88 1.86 5.39 4.43l.3 1.5 1.53.11c1.56.1 2.78 1.44 2.78 3.02 0 1.65-1.35 3-3 3z" /></svg>;
           } else if (storageType === 'both' || file.cache_path) {
-            storageIcon = '📥';
+            storageIcon = <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM12 17l-4-4h2.55v-3h2.91v3H16l-4 4z" /></svg>;
           } else if (storageType === 'local') {
-            storageIcon = '🎵';
+            storageIcon = <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z" /></svg>;
           }
 
           return (
@@ -313,8 +318,8 @@ const SongList = ({ musicFiles, currentFile, onPlay, onToggleFavorite, onAddPlay
               />
 
               <div className="song-info">
-                <p className="song-title">
-                  {storageIcon && <span style={{ marginRight: '6px', fontSize: '14px' }}>{storageIcon}</span>}
+                <p className="song-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {storageIcon && <span style={{ color: 'var(--accent-red)', display: 'inline-flex', alignItems: 'center' }}>{storageIcon}</span>}
                   {file.metadata?.title || file.name}
                 </p>
                 <p className="song-artist">

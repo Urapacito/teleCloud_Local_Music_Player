@@ -189,7 +189,8 @@ const TeleCloudSyncSettings = () => {
                 storageLocation,
                 customChannelId: storageLocation === 'existing_channel' ? customChannelId : null,
                 playbackMode,
-                cacheLimit
+                cacheLimit,
+                musicFolders: [] // FIX: Pass music folders from settings
             });
 
             if (result.success) {
@@ -269,7 +270,7 @@ const TeleCloudSyncSettings = () => {
     };
 
     const handleDeleteAll = async () => {
-        if (!window.confirm('⚠️ Delete ALL files from Telegram channel?\n\nThis will:\n- Delete all messages in the channel\n- Clear sync state from database\n- Cannot be undone\n\nAre you sure?')) {
+        if (!window.confirm('Delete ALL files from Telegram channel?\n\nThis will:\n- Delete all messages in the channel\n- Clear sync state from database\n- Cannot be undone\n\nAre you sure?')) {
             return;
         }
 
@@ -771,7 +772,7 @@ const TeleCloudSyncSettings = () => {
                                         Saved Messages Only (2GB total limit)
                                     </div>
                                     <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-                                        ⚠️ Only suitable for small libraries or metadata-only
+                                        Only suitable for small libraries or metadata-only
                                     </div>
                                 </div>
                             </div>

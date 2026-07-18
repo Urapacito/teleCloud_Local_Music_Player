@@ -58,10 +58,20 @@ function setupTeleCloudSyncHandlers() {
                 const creds = credentialManager.getCredentials();
 
                 // Calculate actual synced items and storage
+                // ☁️ TeleCloud Sync: Count from sync_state to be most accurate for total library status
+                const { getSyncState } = require('./database');
+                const allSyncState = getSyncState();
+                const syncedFiles = allSyncState.filter(s => s.sync_status === 'synced');
+
+                // Get sizes from music_files for storage calculation
                 const { getAllFiles } = require('./database');
                 const allFiles = getAllFiles();
-                const syncedFiles = allFiles.filter(f => f.telegram_message_id);
-                const storageUsed = syncedFiles.reduce((total, f) => total + (f.size || 0), 0);
+                const fileMap = new Map(allFiles.map(f => [f.path, f]));
+
+                const storageUsed = syncedFiles.reduce((total, s) => {
+                    const file = fileMap.get(s.file_path);
+                    return total + (file ? (file.size || 0) : 0);
+                }, 0);
 
                 return {
                     success: true,
@@ -201,7 +211,8 @@ function setupTeleCloudSyncHandlers() {
                 channelId: config.customChannelId,
                 playbackMode: config.playbackMode,
                 cacheLimit: config.cacheLimit,
-                lastSync: null
+                lastSync: null,
+                musicFolders: config.musicFolders // FIX: Persist music folders
             });
 
             // Clear temp credentials
@@ -304,7 +315,23 @@ function setupTeleCloudSyncHandlers() {
 
             // FIX: Lazy-load database to break circular import cycle
             const { getAllFiles, getSyncState } = require('./database');
-            const localFiles = getAllFiles();
+            let localFiles = getAllFiles();
+
+            // If the database is empty, it's likely after a 'Delete All'.
+            // Trigger a library scan to repopulate the database before syncing.
+            if (localFiles.length === 0) {
+                console.log('[TeleCloudSync] Database is empty. Triggering a library scan before sync...');
+                // We need to get the music folders from settings.
+                const musicFolders = credentialManager.getCredentials()?.musicFolders || [];
+                if (musicFolders.length > 0) {
+                    const { scanWithDatabaseCache } = require('./music');
+                    await scanWithDatabaseCache(musicFolders, null); // Run scan silently
+                    localFiles = getAllFiles(); // Re-fetch files after scan
+                    console.log(`[TeleCloudSync] Library scan complete. Found ${localFiles.length} files.`);
+                } else {
+                    console.warn('[TeleCloudSync] Cannot scan library: No music folders configured.');
+                }
+            }
 
             // Filter audio files only
             const audioFiles = localFiles.filter(f => {
@@ -315,6 +342,10 @@ function setupTeleCloudSyncHandlers() {
             // Filter to only files that need syncing (exclude only successfully synced files)
             const MAX_RETRIES = 3;
             const filesToSync = audioFiles.filter(f => {
+                // ☁️ FIX: Don't try to "upload" cloud-only files that are just placeholders
+                if (f.storage_type === 'cloud') {
+                    return false;
+                }
                 const syncState = getSyncState(f.path);
                 // Include all files except those that are successfully synced
                 return !syncState || syncState.sync_status !== 'synced';
@@ -323,10 +354,37 @@ function setupTeleCloudSyncHandlers() {
             console.log(`[TeleCloudSync] Found ${audioFiles.length} audio files (${filesToSync.length} need syncing)`);
             console.log('[TeleCloudSync] ==========================================');
 
+            // --- Pre-flight check: Fetch existing cloud files to avoid duplicates ---
+            let channelEntity;
+            try {
+                channelEntity = await telegramClient.getEntity(parseInt(creds.channelId));
+            } catch (e) {
+                channelEntity = await telegramClient.getEntity(parseInt(`-100${creds.channelId}`));
+            }
+
+            console.log(`[TeleCloudSync] Fetching cloud index from channel to prevent duplicates...`);
+            const messages = await telegramClient.getMessages(channelEntity, { limit: null });
+
+            // Map of checksum -> messageId
+            const cloudFilesMap = new Map();
+            for (const msg of messages) {
+                if (msg.media && msg.message) {
+                    try {
+                        const meta = JSON.parse(msg.message);
+                        if (meta.checksum) {
+                            cloudFilesMap.set(meta.checksum, msg.id);
+                        }
+                    } catch (e) { /* ignore */ }
+                }
+            }
+            console.log(`[TeleCloudSync] Built cloud index with ${cloudFilesMap.size} existing files.`);
+            // -------------------------------------------------------------------------
+
             // Upload files that aren't synced yet
             let uploadedCount = 0;
             let failedCount = 0;
             let skippedCount = audioFiles.length - filesToSync.length;
+            let linkedCount = 0;
             const failedFiles = [];
 
             for (let i = 0; i < filesToSync.length; i++) {
@@ -339,21 +397,52 @@ function setupTeleCloudSyncHandlers() {
                 const file = filesToSync[i];
                 const fileName = path.basename(file.path);
 
-                // Send progress update to frontend (initial state, 0% upload)
-                event.sender.send('telecloud-sync:progress', {
-                    currentFile: fileName,
-                    current: i + 1,
-                    total: filesToSync.length,
-                    uploadProgress: 0
-                });
-
                 const syncState = getSyncState(file.path);
                 const shouldUpload = !syncState ||
                     syncState.sync_status === 'pending_upload' ||
                     (syncState.sync_status === 'error' && (syncState.retry_count || 0) < MAX_RETRIES);
 
                 if (shouldUpload) {
+                    // Send progress update to frontend (initial state, 0% upload)
+                    event.sender.send('telecloud-sync:progress', {
+                        currentFile: fileName,
+                        current: uploadedCount + linkedCount + 1,
+                        total: filesToSync.length,
+                        uploadProgress: 0
+                    });
+
                     try {
+                        // Calculate checksum to check against cloud index
+                        const localChecksum = await calculateChecksum(file.path);
+
+                        if (cloudFilesMap.has(localChecksum)) {
+                            // File already exists in the cloud, link it without re-uploading
+                            const existingMessageId = cloudFilesMap.get(localChecksum);
+
+                            const { updateSyncState, updateCloudMetadata } = require('./database');
+                            updateSyncState(file.path, {
+                                telegram_message_id: existingMessageId,
+                                telegram_channel_id: creds.channelId,
+                                cloud_checksum: localChecksum,
+                                sync_status: 'synced',
+                                upload_progress: 100,
+                                last_synced_at: new Date().toISOString(),
+                                error_message: null
+                            });
+
+                            updateCloudMetadata(file.path, {
+                                storage_type: 'both',
+                                telegram_message_id: existingMessageId,
+                                telegram_channel_id: creds.channelId,
+                                cloud_checksum: localChecksum,
+                                last_synced_at: new Date().toISOString()
+                            });
+
+                            linkedCount++;
+                            console.log(`\r[${uploadedCount + linkedCount}/${filesToSync.length}] ${fileName} ✓ ALREADY IN CLOUD (Linked)`);
+                            continue;
+                        }
+
                         const result = await uploadTrack(file, creds.channelId, (progress) => {
                             // Check stop flag during upload
                             if (shouldStopSync) {
@@ -365,12 +454,12 @@ function setupTeleCloudSyncHandlers() {
                             const filled = Math.floor((progress / 100) * barLength);
                             const empty = barLength - filled;
                             const bar = '='.repeat(filled) + '>'.padEnd(empty, ' ');
-                            process.stdout.write(`\r[${i + 1}/${filesToSync.length}] ${fileName} [${bar}] ${progress}%`);
+                            process.stdout.write(`\r[${uploadedCount + linkedCount + 1}/${filesToSync.length}] ${fileName} [${bar}] ${progress}%`);
 
                             // Send detailed progress to frontend
                             event.sender.send('telecloud-sync:progress', {
                                 currentFile: fileName,
-                                current: i + 1,
+                                current: uploadedCount + linkedCount + 1,
                                 total: filesToSync.length,
                                 uploadProgress: progress
                             });
@@ -378,11 +467,11 @@ function setupTeleCloudSyncHandlers() {
 
                         if (result.success) {
                             uploadedCount++;
-                            console.log(`\r[${i + 1}/${filesToSync.length}] ${fileName} ✓ SUCCESS`);
+                            console.log(`\r[${uploadedCount + linkedCount}/${filesToSync.length}] ${fileName} ✓ SUCCESS`);
                         } else {
                             failedCount++;
                             failedFiles.push({ file: fileName, error: result.error });
-                            console.log(`\r[${i + 1}/${filesToSync.length}] ${fileName} ✗ FAILED: ${result.error}`);
+                            console.log(`\r[${uploadedCount + linkedCount + 1}/${filesToSync.length}] ${fileName} ✗ FAILED: ${result.error}`);
                         }
                     } catch (error) {
                         // Check if stop was requested
@@ -394,7 +483,7 @@ function setupTeleCloudSyncHandlers() {
 
                         failedCount++;
                         failedFiles.push({ file: fileName, error: error.message });
-                        console.log(`\r[${i + 1}/${filesToSync.length}] ${fileName} ✗ ERROR: ${error.message}`);
+                        console.log(`\r[${uploadedCount + linkedCount + 1}/${filesToSync.length}] ${fileName} ✗ ERROR: ${error.message}`);
                     }
                 } else if (syncState && syncState.sync_status === 'synced') {
                     skippedCount++;
@@ -406,6 +495,7 @@ function setupTeleCloudSyncHandlers() {
             console.log('\n[TeleCloudSync] ==========================================');
             console.log(`[TeleCloudSync] Sync Complete:`);
             console.log(`[TeleCloudSync]   ✓ Uploaded: ${uploadedCount} files`);
+            console.log(`[TeleCloudSync]   ✓ Linked (already in cloud): ${linkedCount} files`);
             console.log(`[TeleCloudSync]   ✗ Failed: ${failedCount} files`);
             console.log(`[TeleCloudSync]   ⊘ Skipped: ${skippedCount} files`);
 
@@ -473,14 +563,18 @@ function setupTeleCloudSyncHandlers() {
         }
     });
 
-    // Delete all files from channel (for testing)
+    // Delete all files from channel AND local database (the big reset button)
     ipcMain.handle('telecloud-sync:delete-all', async () => {
         try {
-            console.log('[TeleCloudSync] Deleting all files from channel...');
+            console.log('[TeleCloudSync] DELETING ALL TELECLOUD DATA...');
 
             const creds = credentialManager.getCredentials();
             if (!creds || !creds.channelId) {
-                return { success: false, error: 'No channel ID configured' };
+                // Even if no channel is configured, we should still wipe the local DB tables.
+                console.log('[TeleCloudSync] No channel configured, but clearing local sync database...');
+                const { clearSyncData } = require('./database');
+                clearSyncData();
+                return { success: true, deletedCount: 0, dbCleared: true };
             }
 
             await ensureConnected();
@@ -488,46 +582,48 @@ function setupTeleCloudSyncHandlers() {
             // Get channel entity
             let channelEntity;
             try {
-                channelEntity = await telegramClient.getEntity(creds.channelId);
+                channelEntity = await telegramClient.getEntity(parseInt(creds.channelId));
             } catch (entityError) {
-                const channelPeerId = `-100${creds.channelId}`;
-                channelEntity = await telegramClient.getEntity(channelPeerId);
+                // Try again with the format for private channels
+                channelEntity = await telegramClient.getEntity(parseInt(`-100${creds.channelId}`));
             }
 
-            // Get all messages from channel
-            const messages = await telegramClient.getMessages(channelEntity, { limit: 100 });
-            console.log(`[TeleCloudSync] Found ${messages.length} messages to delete`);
+            // Fetch ALL message IDs from the channel
+            const messageIds = [];
+            const messagesIterator = telegramClient.iterMessages(channelEntity, { limit: 100 });
+            for await (const message of messagesIterator) {
+                messageIds.push(message.id);
+            }
+            console.log(`[TeleCloudSync] Found ${messageIds.length} messages to delete from Telegram channel.`);
 
+            // Delete messages in chunks of 100 (API limit)
             let deletedCount = 0;
-            for (const message of messages) {
-                try {
-                    await telegramClient.deleteMessages(channelEntity, [message.id], { revoke: true });
-                    deletedCount++;
-                } catch (error) {
-                    console.error(`[TeleCloudSync] Error deleting message ${message.id}:`, error.message);
-                }
+            for (let i = 0; i < messageIds.length; i += 100) {
+                const chunk = messageIds.slice(i, i + 100);
+                await telegramClient.deleteMessages(channelEntity, chunk, { revoke: true });
+                deletedCount += chunk.length;
+                console.log(`[TeleCloudSync] Deleted ${deletedCount}/${messageIds.length} messages...`);
             }
 
-            // Clear sync state from database
-            const { updateSyncState, getAllFiles } = require('./database');
-            const allFiles = getAllFiles();
-            allFiles.forEach(file => {
-                if (file.telegram_message_id) {
-                    updateSyncState(file.path, {
-                        telegram_message_id: null,
-                        telegram_channel_id: null,
-                        cloud_checksum: null,
-                        sync_status: null,
-                        upload_progress: 0,
-                        last_synced_at: null
-                    });
-                }
-            });
+            // NUKE THE DATABASE TABLES
+            // This is the critical fix: ensure the database is completely empty for a true fresh start.
+            const { clearSyncData } = require('./database');
+            clearSyncData();
 
-            console.log(`[TeleCloudSync] Deleted ${deletedCount} messages and cleared sync state`);
-            return { success: true, deletedCount };
+            console.log(`[TeleCloudSync] Successfully deleted ${deletedCount} messages and cleared local database.`);
+            return { success: true, deletedCount, dbCleared: true };
         } catch (error) {
-            console.error('[TeleCloudSync] Error deleting all files:', error);
+            console.error('[TeleCloudSync] Error deleting all data:', error);
+
+            // Even if Telegram deletion fails, try to clear the DB as a fallback.
+            try {
+                const { clearSyncData } = require('./database');
+                clearSyncData();
+                console.log('[TeleCloudSync] Telegram deletion failed, but local database was cleared.');
+            } catch (dbError) {
+                console.error('[TeleCloudSync] Critical error: Failed to delete from Telegram AND failed to clear database:', dbError);
+            }
+
             return { success: false, error: error.message };
         }
     });
@@ -1002,6 +1098,16 @@ async function restoreFromCloud() {
                         telegram_message_id: message.id,
                         telegram_channel_id: creds.channelId,
                         cloud_checksum: cloudMeta.checksum,
+                        last_synced_at: new Date(message.date * 1000).toISOString(),
+                    });
+
+                    // ☁️ FIX: Also create a 'synced' record in the sync_state table
+                    const { updateSyncState } = require('./database');
+                    updateSyncState(placeholderPath, {
+                        telegram_message_id: message.id,
+                        telegram_channel_id: creds.channelId,
+                        cloud_checksum: cloudMeta.checksum,
+                        sync_status: 'synced',
                         last_synced_at: new Date(message.date * 1000).toISOString(),
                     });
 

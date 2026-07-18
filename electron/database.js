@@ -352,8 +352,9 @@ function getFilesNeedingUpdate(currentFiles) {
     }
 
     // Find deleted files (in cache but not on disk)
+    // ☁️ TeleCloud Sync: Don't delete files that are cloud-only or both
     const deleted = cachedFiles
-        .filter(cf => !diskPaths.has(cf.path))
+        .filter(cf => !diskPaths.has(cf.path) && cf.storage_type === 'local')
         .map(cf => cf.path);
 
     return { needsUpdate, cached, deleted };
@@ -537,6 +538,43 @@ function closeDatabase() {
     }
 }
 
+/**
+ * Update metadata for a batch of files.
+ * This is optimized for updating only lyrics and covers.
+ * @param {Array<Object>} filesToUpdate - Array of file objects with path, lyrics, and cover
+ */
+function updateMetadataBatch(filesToUpdate) {
+    if (!db) initDatabase();
+    if (!filesToUpdate || filesToUpdate.length === 0) return;
+
+    const stmt = db.prepare(`
+        UPDATE music_files
+        SET
+            lyrics = @lyrics,
+            cover = @cover,
+            has_cover = CASE WHEN @cover IS NOT NULL AND @cover != '' THEN 1 ELSE has_cover END
+        WHERE path = @path
+    `);
+
+    const updateMany = db.transaction((files) => {
+        for (const file of files) {
+            if (!file.path) continue;
+            stmt.run({
+                path: file.path,
+                lyrics: file.lyrics,
+                cover: file.cover
+            });
+        }
+    });
+
+    try {
+        updateMany(filesToUpdate);
+        console.log(`[Database] Batch updated metadata for ${filesToUpdate.length} files.`);
+    } catch (err) {
+        console.error('[Database] Batch metadata update failed:', err);
+    }
+}
+
 module.exports = {
     initDatabase,
     getFileByPath,
@@ -554,5 +592,27 @@ module.exports = {
     updateSyncState,
     getSyncStateByStatus,
     deleteSyncState,
-    updateCloudMetadata
+    updateCloudMetadata,
+    updateMetadataBatch,
+    clearSyncData
 };
+
+
+/**
+ * TeleCloud Sync: Clear all sync-related data from the database.
+ * This truncates both music_files and sync_state tables.
+ * @returns {void}
+ */
+function clearSyncData() {
+    if (!db) initDatabase();
+
+    try {
+        db.exec('DELETE FROM music_files');
+        db.exec('DELETE FROM sync_state');
+        // We also reset the sqlite sequence to ensure new primary keys start from 1
+        db.exec("DELETE FROM sqlite_sequence WHERE name IN ('music_files', 'sync_state')");
+        console.log('[Database] All TeleCloud sync data has been cleared.');
+    } catch (error) {
+        console.error('[Database] Failed to clear sync data:', error);
+    }
+}
